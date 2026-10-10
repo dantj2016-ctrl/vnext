@@ -1,0 +1,358 @@
+{
+ "Clínica Dra. Lorena Estocler Harmonização Facial": {
+  "t": "CLÍNICA DRA. LORENA ESTOCLER HARMONIZAÇÃO FAC",
+  "v2": {
+   "bytes": 1442153,
+   "sha256": "5a57c9d1e3e4d327e0f1d167e0064c3a6adae6337839cbffd177c1c8df0646a8"
+  },
+  "v1": {
+   "bytes": 721498,
+   "sha256": "c31cb9497c4e5b2878371bef1e9d2f15bfcc462f894306c13a0f18e30b0f49ae"
+  },
+  "v3_on_old_code": {
+   "bytes": 721498,
+   "sha256": "c31cb9497c4e5b2878371bef1e9d2f15bfcc462f894306c13a0f18e30b0f49ae",
+   "equals_v1": true
+  }
+ },
+ "Dra. Nathália Haddad": {
+  "t": "DRA. NATHÁLIA HADDAD",
+  "v2": {
+   "bytes": 1442153,
+   "sha256": "53b11aa631afbaffa4ee2b7f8afcb2c66755b1cbb6da08ffb7b5fa28ee810a20"
+  },
+  "v1": {
+   "bytes": 721498,
+   "sha256": "657adf6eeb8dffe589e571fc363e51c0fff09e7e62c248563b07ff5221a4fd9b"
+  },
+  "v3_on_old_code": {
+   "bytes": 721498,
+   "sha256": "657adf6eeb8dffe589e571fc363e51c0fff09e7e62c248563b07ff5221a4fd9b",
+   "equals_v1": true
+  }
+ },
+ "Lumiè Clínica de Estética Avançada": {
+  "t": "LUMIÈ CLÍNICA DE ESTÉTICA AVANÇADA",
+  "v2": {
+   "bytes": 1442153,
+   "sha256": "9213bc31e90456e2d1a2e43615b1c1efe70eaeac9e09ddf2955633f9219c32a9"
+  },
+  "v1": {
+   "bytes": 721498,
+   "sha256": "0743d087df7c2ba5bcf56bdae8a1cb6de4c5a406ac4cb72ff6642a00758963b8"
+  },
+  "v3_on_old_code": {
+   "bytes": 721498,
+   "sha256": "0743d087df7c2ba5bcf56bdae8a1cb6de4c5a406ac4cb72ff6642a00758963b8",
+   "equals_v1": true
+  }
+ },
+ "Instituto BEEyond": {
+  "t": "INSTITUTO BEEYOND",
+  "v2": {
+   "bytes": 1442153,
+   "sha256": "2d3e3f5c6c704e0b2ba7e3590f9d9eedcde24be0414952112ba60cb74f796564"
+  },
+  "v1": {
+   "bytes": 721498,
+   "sha256": "9998ecf0bf16c681895819d480e6e60e0d021b77d9b6df1b44443f8ed11a602f"
+  },
+  "v3_on_old_code": {
+   "bytes": 721498,
+   "sha256": "9998ecf0bf16c681895819d480e6e60e0d021b77d9b6df1b44443f8ed11a602f",
+   "equals_v1": true
+  }
+ },
+ "Clínica Capier Dermatologia": {
+  "t": "CLÍNICA CAPIER DERMATOLOGIA",
+  "v2": {
+   "bytes": 1442153,
+   "sha256": "0ebb3f79c7ff64654ec033df89539f247577a11487547dd5b6fd600fb54a99f3"
+  },
+  "v1": {
+   "bytes": 721498,
+   "sha256": "4f01b9ae243c1ba9b3624b78cf608f2c2ff54125a3eb007af6491165c483ea95"
+  },
+  "v3_on_old_code": {
+   "bytes": 721498,
+   "sha256": "4f01b9ae243c1ba9b3624b78cf608f2c2ff54125a3eb007af6491165c483ea95",
+   "equals_v1": true
+  }
+ },
+ "Dra. Aline Dalávia — Medicina Estética Avançada": {
+  "t": "DRA. ALINE DALÁVIA MEDICINA ESTÉTICA AVANÇADA",
+  "v2": {
+   "bytes": 1442153,
+   "sha256": "5a150a5a331a815a567239dc05dcb7280dba3fe029c482bd440f69e55514fbbc"
+  },
+  "v1": {
+   "bytes": 721498,
+   "sha256": "de14dc535cc8b6532d8bf9e1346b34b2445dbf7384b514595ba783b5e2dbc781"
+  },
+  "v3_on_old_code": {
+   "bytes": 721498,
+   "sha256": "de14dc535cc8b6532d8bf9e1346b34b2445dbf7384b514595ba783b5e2dbc781",
+   "equals_v1": true
+  }
+ },
+ "ElevaEsthetic": {
+  "t": "ELEVAESTHETIC",
+  "v2": {
+   "bytes": 1442153,
+   "sha256": "196754fdcdb7d1fa597d0ac4549cce3544741c350f7ed3fb943dc18c596afd31"
+  },
+  "v1": {
+   "bytes": 721498,
+   "sha256": "a994b62c69ea60d340897a3d20812f2aaeb58b4d906ae090868328af35540a0d"
+  },
+  "v3_on_old_code": {
+   "bytes": 721498,
+   "sha256": "a994b62c69ea60d340897a3d20812f2aaeb58b4d906ae090868328af35540a0d",
+   "equals_v1": true
+  }
+ },
+ "Perfeccionare Estética Personalizada": {
+  "t": "PERFECCIONARE ESTÉTICA PERSONALIZADA",
+  "v2": {
+   "bytes": 1442153,
+   "sha256": "90c3dff1c01b1fcd0be0bba261134e92265863b333d6e06486d519fabc876f49"
+  },
+  "v1": {
+   "bytes": 721498,
+   "sha256": "42eaedc207b63f5b15ae59551231e88c09c3b797a317672f55bb1984d99bdcd7"
+  },
+  "v3_on_old_code": {
+   "bytes": 721498,
+   "sha256": "42eaedc207b63f5b15ae59551231e88c09c3b797a317672f55bb1984d99bdcd7",
+   "equals_v1": true
+  }
+ },
+ "AB": {
+  "t": "AB",
+  "v2": {
+   "bytes": 1442153,
+   "sha256": "7bac7ca101e964afa8e162338569661435926f5920cd916ed33c16cead7dd289"
+  },
+  "v1": {
+   "bytes": 721498,
+   "sha256": "f017cad628f23b897e887898c75653ad46251003621c5975fe83374e4530f25f"
+  },
+  "v3_on_old_code": {
+   "bytes": 721498,
+   "sha256": "f017cad628f23b897e887898c75653ad46251003621c5975fe83374e4530f25f",
+   "equals_v1": true
+  }
+ },
+ "A": {
+  "t": "A",
+  "v2": null,
+  "v1": null,
+  "v3_on_old_code": null
+ },
+ "": {
+  "t": "",
+  "v2": null,
+  "v1": null,
+  "v3_on_old_code": null
+ },
+ "  ": {
+  "t": "",
+  "v2": null,
+  "v1": null,
+  "v3_on_old_code": null
+ },
+ "Ñandú": {
+  "t": "ÑANDÚ",
+  "v2": {
+   "bytes": 1442153,
+   "sha256": "1f382bede8118da100cd920ead93ef57a25bfa9d834f7d93d6721380213b6525"
+  },
+  "v1": {
+   "bytes": 721498,
+   "sha256": "3ccecfaf83a850e4422f435dd6e7982be06cedcb696b0330889d7293a8f7a84c"
+  },
+  "v3_on_old_code": {
+   "bytes": 721498,
+   "sha256": "3ccecfaf83a850e4422f435dd6e7982be06cedcb696b0330889d7293a8f7a84c",
+   "equals_v1": true
+  }
+ },
+ "Müller": {
+  "t": "MU LLER",
+  "v2": {
+   "bytes": 1442153,
+   "sha256": "0854e3916f48245cb3b4ee5cc48c1bf81380de2a095f9737dc7ff39752df71fc"
+  },
+  "v1": {
+   "bytes": 721498,
+   "sha256": "52f406dc1abdbc23cca917ef633497a86d0ea5d3e4a5bf546efc028cd42fcb62"
+  },
+  "v3_on_old_code": {
+   "bytes": 721498,
+   "sha256": "52f406dc1abdbc23cca917ef633497a86d0ea5d3e4a5bf546efc028cd42fcb62",
+   "equals_v1": true
+  }
+ },
+ "Ø": {
+  "t": "",
+  "v2": null,
+  "v1": null,
+  "v3_on_old_code": null
+ },
+ "日本語": {
+  "t": "",
+  "v2": null,
+  "v1": null,
+  "v3_on_old_code": null
+ },
+ "Dr. João & Maria — Estética": {
+  "t": "DR. JOÃO & MARIA ESTÉTICA",
+  "v2": {
+   "bytes": 1442153,
+   "sha256": "366c3a316f1b34e2b7c0ccb6523de1747b8647a7eb34d08fbbae57694cd8ddbb"
+  },
+  "v1": {
+   "bytes": 721498,
+   "sha256": "88131be5e98af2bb22de50fd63b157091608ec3b0a31f5e50ccb48a44b2d3aaa"
+  },
+  "v3_on_old_code": {
+   "bytes": 721498,
+   "sha256": "88131be5e98af2bb22de50fd63b157091608ec3b0a31f5e50ccb48a44b2d3aaa",
+   "equals_v1": true
+  }
+ },
+ "O'Neil-Santos Clinic": {
+  "t": "O'NEIL-SANTOS CLINIC",
+  "v2": {
+   "bytes": 1442153,
+   "sha256": "8d6c4a9b65c15093295f889a135ca9ce646a49f470cf2efc11f691180deb2a00"
+  },
+  "v1": {
+   "bytes": 721498,
+   "sha256": "e95e8a78dbad6f46bad787988edc09ba2aea9cc51a25c5e7b6354a00ac7f84a9"
+  },
+  "v3_on_old_code": {
+   "bytes": 721498,
+   "sha256": "e95e8a78dbad6f46bad787988edc09ba2aea9cc51a25c5e7b6354a00ac7f84a9",
+   "equals_v1": true
+  }
+ },
+ "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA": {
+  "t": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+  "v2": {
+   "bytes": 1442153,
+   "sha256": "cc253e2ab0e1e6af6aea196e5a267f51c82d8d3f9513f355294a0ddb9d878fde"
+  },
+  "v1": {
+   "bytes": 721498,
+   "sha256": "49e70d5baf353ccb8bb12b71c1b85d1a1a6be47995abcfd12fc54ef0c42d42c8"
+  },
+  "v3_on_old_code": {
+   "bytes": 721498,
+   "sha256": "49e70d5baf353ccb8bb12b71c1b85d1a1a6be47995abcfd12fc54ef0c42d42c8",
+   "equals_v1": true
+  }
+ },
+ "Clínica São José do Rio Preto de Estética Avançada e Medicina Integrativa": {
+  "t": "CLÍNICA SÃO JOSÉ DO RIO PRETO DE ESTÉTICA AV",
+  "v2": {
+   "bytes": 1442153,
+   "sha256": "02e3d4e391f6bc3338a9df3a9cb0d93f70897e884d88c0a0acb3820ac66525bb"
+  },
+  "v1": {
+   "bytes": 721498,
+   "sha256": "3b6769de288523d1c50cf98da61ed2844372ee72e9e1a5158f69cb599e9e9209"
+  },
+  "v3_on_old_code": {
+   "bytes": 721498,
+   "sha256": "3b6769de288523d1c50cf98da61ed2844372ee72e9e1a5158f69cb599e9e9209",
+   "equals_v1": true
+  }
+ },
+ "1 2 3": {
+  "t": "1 2 3",
+  "v2": {
+   "bytes": 1442153,
+   "sha256": "71a24d70270a668a469fec8b1cf7a04ad0d82311f3c32ddfc2d16b5a2e3af7db"
+  },
+  "v1": {
+   "bytes": 721498,
+   "sha256": "e6f44a769bdab9dda7638097afd2d58b8288aa8bae317da4c805ec4ec948a79b"
+  },
+  "v3_on_old_code": {
+   "bytes": 721498,
+   "sha256": "e6f44a769bdab9dda7638097afd2d58b8288aa8bae317da4c805ec4ec948a79b",
+   "equals_v1": true
+  }
+ },
+ "!!": {
+  "t": "",
+  "v2": null,
+  "v1": null,
+  "v3_on_old_code": null
+ },
+ "x y": {
+  "t": "X Y",
+  "v2": {
+   "bytes": 1442153,
+   "sha256": "5552b8def0f1a9b33cf4c96f5092c3a1f4b4a0c3729fe3056156cca0a5e9ed81"
+  },
+  "v1": {
+   "bytes": 721498,
+   "sha256": "fbe6318b6a6850ac07ee53f26da984fad96314f50e118e15ecb8eb83294d2168"
+  },
+  "v3_on_old_code": {
+   "bytes": 721498,
+   "sha256": "fbe6318b6a6850ac07ee53f26da984fad96314f50e118e15ecb8eb83294d2168",
+   "equals_v1": true
+  }
+ },
+ "Jô": {
+  "t": "JÔ",
+  "v2": {
+   "bytes": 1442153,
+   "sha256": "7173b4fbb85134e9fc0a29fc5bbd0072e1b8852ced621f1d14636e85d80e7d98"
+  },
+  "v1": {
+   "bytes": 721498,
+   "sha256": "2b9af1b56091cf34a7bcb491bbb76d55550c678c4c616275506a6435a0b7b533"
+  },
+  "v3_on_old_code": {
+   "bytes": 721498,
+   "sha256": "2b9af1b56091cf34a7bcb491bbb76d55550c678c4c616275506a6435a0b7b533",
+   "equals_v1": true
+  }
+ },
+ "Ana-Júlia Çavuş": {
+  "t": "ANA-JÚLIA ÇAVUŞ",
+  "v2": {
+   "bytes": 1442153,
+   "sha256": "f67b365d5ecd8b653a9de0ec154ad675b4549d23b3f60f8bc8e66555f43a5338"
+  },
+  "v1": {
+   "bytes": 721498,
+   "sha256": "b23804daf2921c9e83c7a66df2ef2db08d55754543189f41ab70a6f83b2e381b"
+  },
+  "v3_on_old_code": {
+   "bytes": 721498,
+   "sha256": "b23804daf2921c9e83c7a66df2ef2db08d55754543189f41ab70a6f83b2e381b",
+   "equals_v1": true
+  }
+ },
+ "W W W W W W W W W W W W W W W W W W W W W W W": {
+  "t": "W W W W W W W W W W W W W W W W W W W W W W W",
+  "v2": {
+   "bytes": 1442153,
+   "sha256": "bfd46fd28c8eca79bcfdd9087f54453c48a6d999f6843bf4b5d13ca1d2698e32"
+  },
+  "v1": {
+   "bytes": 721498,
+   "sha256": "80817432cc2b05c1c093f7bf98a52907570c8976c16578a98f4db96e37c0ad64"
+  },
+  "v3_on_old_code": {
+   "bytes": 721498,
+   "sha256": "80817432cc2b05c1c093f7bf98a52907570c8976c16578a98f4db96e37c0ad64",
+   "equals_v1": true
+  }
+ }
+}

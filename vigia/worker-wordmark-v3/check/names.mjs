@@ -1,0 +1,3 @@
+// the 8 mandated sample names + edge cases
+export const NAMES = ["Clínica Dra. Lorena Estocler Harmonização Facial","Dra. Nathália Haddad","Lumiè Clínica de Estética Avançada","Instituto BEEyond","Clínica Capier Dermatologia","Dra. Aline Dalávia — Medicina Estética Avançada","ElevaEsthetic","Perfeccionare Estética Personalizada"];
+export const EDGE = ["AB","A","","  ","Ñandú","Müller","Ø","日本語","Dr. João & Maria — Estética","O'Neil-Santos Clinic","A".repeat(60),"Clínica São José do Rio Preto de Estética Avançada e Medicina Integrativa","1 2 3","!!","x y","Jô","Ana-Júlia Çavuş","W W W W W W W W W W W W W W W W W W W W W W W"];
