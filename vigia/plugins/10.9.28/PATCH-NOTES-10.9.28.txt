@@ -1,0 +1,27 @@
+WF Commercial Agent Supreme 10.9.28-RESILIENCE-RC1  (base: 10.9.27-BRAKE-BY-CODE-RC1)
+
+Why: 10/10/2026 incidents (D0 + follow-up paused 68 min by the delivery brake on OUR 503/131053; Kapso HTTP 402 burned 3 leads into HUMAN_HANDOFF;
+a D0 with failed delivery could never be re-sent). Minimal patch, no change to opt-out / human handoff / payment / delivery idempotency gates.
+
+A. Transient D0 failures (131053, 131016, 131000, or Meta quoting "http code 5xx")
+   - Brake: first d0_brake_transient_free (default 2) of them in the 10-send window are left out of both sides of the ratio; the 3rd+ count again.
+   - Re-queue: D0 reported FAILED by the provider, never delivered/read, no prospect inbound, LUNA-owned, not held/opted out => ONE new outbox row,
+     key sha256('INITIAL|lead|phone|R<n>'), n<=2, >=600 s later, same template + variables (preview binding re-checked at send). Original row untouched.
+   - Follow-up ladder only builds on a D0 that did not fail (effective_initial: INITIAL, R1, R2 in order). Before: a follow-up could go to a lead whose D0 failed.
+   - Send-time preview probe: uncached GET of the preview URL right before the template send; non-200 => defer 5 min (no attempt burned) + WARN alert.
+B. Kapso HTTP 402 / insufficient_credits
+   - option wfca_provider_hold_until (+600 s, renewed by each 402). Row back to PENDING, send boundary cleared, attempts NOT incremented, no handoff.
+   - While held: claim_outbox only serves ALERT_EMAIL; D0 and follow-up schedulers do not reserve. Ends on the first accepted send (alert resolved).
+   - One CRITICAL alert PROVIDER_CREDITS_EXHAUSTED:KAPSO_HTTP_402 per episode. followup_permanent_error never treats 402/408/429/5xx as permanent.
+C. Auto-reconciler (tick stage RECONCILE, every 600 s, max 5 per run)
+   - HUMAN_HANDOFF with owner_reason OUTBOX_FAILED:<transient> (402/408/429/5xx, AIRTABLE_LEAD_READ_FAIL, COMMERCIAL_STATE_READ_FAIL, WORKER_EXCEPTION),
+     no inbound, not opted out, never-sent FAILED outbox => Ownership::change LUNA (explicit; re-reads remote opt-out), state READY_FOR_CONTACT (D0) or
+     FOLLOWUP_SCHEDULED (+ original due), human_hold=0, Airtable updated, outbox reset on the same key (attempts=0). Max 3 recoveries per outbox. 1 INFO alert per run.
+   - FOLLOWUP_SCHEDULED overdue > 7200 s with no live outbox => cleared (no D0 proof / unsafe) or returned to WAITING_REPLY; WARN alert.
+D. Health: option wfca_health_v1 (written every tick, options only) + exposed as health_v1 in /commercial/health details.
+E. Follow-up queue head-of-line: eligible_due_followups pageSize 1 -> 20 (reservations still limited to 1/tick).
+
+New WFCA_RULES_V1 keys (all optional, validated/clamped): d0_delivery_brake_transient_codes, d0_brake_transient_free (0-10; 0 = old behaviour),
+d0_transient_retry_enabled, d0_transient_retry_max (0-2), d0_transient_retry_gap_seconds (>=600), d0_presend_probe, provider_hold_seconds (120-3600),
+reconcile_enabled, reconcile_max_per_run, reconcile_interval_seconds (>=300), followup_stuck_after_seconds (>=3600).
+No schema change. Tests: test/test-resilience-10928.php, test/test-resilience-db-shape.php (+ existing suite, one assertion adapted in test-delivery-fail-counters.php).

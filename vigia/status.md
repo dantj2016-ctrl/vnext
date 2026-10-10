@@ -5,3 +5,9 @@
 - Plugin 10.9.26 instalado (códigos reais de erro já gravados em Commercial Error).
 - Janela de D0 de hoje estendida até 20:00 BRT (reverter para 18:00 depois). Freio com razão 0,30. spacing_max 300 s.
 - Logo v=3: pacote pronto em vigia/worker-wordmark-v3/ (157 checagens passam, flag desligada = produção idêntica); aguardando Mac/Daniel aplicar e fazer deploy.
+
+## 2026-10-10 19:20Z — pausa de 68 min do D0 e plugin 10.9.28
+- Causa raiz: freio de entrega olha os ultimos 10 D0 (codigo) e pausa 1 h se falhas/resolvidos > 0,30. 17:17Z (131049), 17:38Z (131049), 17:44Z (131053) = 3/9 => pausa 17:45Z-~18:50Z. Hipersensivel: varias pausas/dia esperadas.
+- Mudanca em Config (WFCA_RULES_V1): razao 0,30 -> 0,40; d0_delivery_brake_ignore_codes += 131053. Rollback na linha [MUDANCA] 19:20Z do Progress Log.
+- Plugin 10.9.28-RESILIENCE-RC1 em vigia/plugins/10.9.28/ (zip + SHA256 + AUDIT + PATCH-NOTES + diff): 131053 transitorio com reenvio seguro (chave INITIAL|lead|phone|R<n>), 402 pausa o provedor sem queimar lead, reconciliador de handoffs transitorios a cada 10 min, follow-up so para D0 nao falho, probe da previa antes do envio, wfca_health_v1. Testes offline: 640 passaram.
+- Instalar no domingo (D0 desligado), conferir wfca_health_v1 e so entao segunda 08:00.

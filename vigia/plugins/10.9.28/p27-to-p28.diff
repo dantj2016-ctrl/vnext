@@ -1,0 +1,623 @@
+Only in p28/wf-commercial-agent-supreme: PATCH-NOTES-10.9.28.txt
+diff -ru p27/wf-commercial-agent-supreme/includes/class-wfca-airtable.php p28/wf-commercial-agent-supreme/includes/class-wfca-airtable.php
+--- p27/wf-commercial-agent-supreme/includes/class-wfca-airtable.php	2026-10-10 13:53:51.215915727 +0000
++++ p28/wf-commercial-agent-supreme/includes/class-wfca-airtable.php	2026-10-10 19:10:03.248061748 +0000
+@@ -735,6 +735,22 @@
+     }
+ 
+ 
++    /** 10.9.28: FOLLOWUP_SCHEDULED rows whose due passed before $older_than_iso (stuck: nothing was queued). */
++    public static function stuck_followup_scheduled(string $older_than_iso,int $max=5): array {
++        $formula="AND({Enabled}=1,{Conversation Owner}='LUNA',{State}='FOLLOWUP_SCHEDULED',{Next Commercial Action At}!='',IS_BEFORE({Next Commercial Action At},'".str_replace("'","\\'",$older_than_iso)."'))";
++        return self::req('GET','Commercial Conversations','',null,[
++            'pageSize'=>min(100,max(1,$max)),'filterByFormula'=>$formula
++        ]);
++    }
++
++    /** 10.9.28: send-time probe of the D0 preview URL (uncached, tiny read) so a 5xx on OUR server is seen before Meta fetches it. */
++    public static function d0_preview_probe(string $url): array {
++        $r=wp_remote_get($url,['timeout'=>10,'redirection'=>2,'limit_response_size'=>4096,'headers'=>['Accept'=>'image/*']]);
++        if (is_wp_error($r)) return ['ok'=>false,'code'=>0];
++        $code=(int)wp_remote_retrieve_response_code($r);
++        return ['ok'=>$code===200,'code'=>$code];
++    }
++
+     /** WAITING_REPLY rows that may need native D0 follow-up due materialization. */
+     public static function waiting_followup_candidates(int $max=100): array {
+         $formula="AND({Enabled}=1,{Conversation Owner}='LUNA',{State}='WAITING_REPLY',{Last Outbound At}!='')";
+diff -ru p27/wf-commercial-agent-supreme/includes/class-wfca-db.php p28/wf-commercial-agent-supreme/includes/class-wfca-db.php
+--- p27/wf-commercial-agent-supreme/includes/class-wfca-db.php	2026-10-10 13:53:51.215756104 +0000
++++ p28/wf-commercial-agent-supreme/includes/class-wfca-db.php	2026-10-10 19:10:03.247324279 +0000
+@@ -532,11 +532,13 @@
+         $wpdb->update(self::t('outbox'), $fields, ['id'=>$id]);
+     }
+ 
+-    public static function claim_outbox(string $worker,string $mode='ASSISTED',bool $draining=false): ?array {
++    public static function claim_outbox(string $worker,string $mode='ASSISTED',bool $draining=false,bool $provider_hold=false): ?array {
+         global $wpdb;
+         $now = WFCA_Util::now_mysql();
+         $approval=$mode==='ASSISTED' ? ' AND approved_at IS NOT NULL ' : '';
+         $drain=$draining ? " AND action_type NOT IN ('TEMPLATE_INITIAL','FOLLOWUP','TEMPLATE_NURTURE') " : '';
++        // 10.9.28: while the Kapso balance is exhausted only e-mail alerts (no Kapso call) are claimable; nothing else burns attempts.
++        if ($provider_hold) $drain.=" AND action_type='ALERT_EMAIL' ";
+         $row = $wpdb->get_row($wpdb->prepare(
+             "SELECT * FROM " . self::t('outbox') . "
+              WHERE status IN ('PENDING','APPROVED') $approval $drain AND (next_attempt_at IS NULL OR next_attempt_at<=%s)
+@@ -639,6 +641,48 @@
+         return false;
+     }
+ 
++    /**
++     * 10.9.28: provider hold (Kapso HTTP 402). The provider rejected the call definitively (nothing was sent), so the row goes back to PENDING
++     * with the send boundary cleared and WITHOUT counting an attempt. Only a row this worker holds (PROCESSING) is touched.
++     */
++    public static function hold_outbox_for_provider(array $row,string $reason,int $delay_seconds): bool {
++        global $wpdb;
++        $n=$wpdb->query($wpdb->prepare(
++            "UPDATE ".self::t('outbox')." SET status='PENDING',last_error=%s,lease_owner=NULL,lease_until=NULL,send_started_at=NULL,next_attempt_at=%s,updated_at=%s
++             WHERE id=%d AND status='PROCESSING' AND provider_message_id IS NULL AND sent_at IS NULL",
++            WFCA_Util::redact_error($reason,500),gmdate('Y-m-d H:i:s',time()+max(60,$delay_seconds)),WFCA_Util::now_mysql(),(int)$row['id']
++        ));
++        return $n===1;
++    }
++
++    /**
++     * 10.9.28: idempotent reset of a FAILED row that never reached the provider (no sid, no sent_at) back to PENDING on the SAME row/idempotency key.
++     * attempts back to 0, owner_revision re-bound to the conversation's current revision. Returns true only when this call changed the row.
++     */
++    public static function reset_failed_outbox(int $id,int $owner_revision,string $status,string $note): bool {
++        global $wpdb;
++        $now=WFCA_Util::now_mysql();
++        $n=$wpdb->query($wpdb->prepare(
++            "UPDATE ".self::t('outbox')." SET status=%s,attempts=0,owner_revision=%d,next_attempt_at=%s,last_error=%s,lease_owner=NULL,lease_until=NULL,send_started_at=NULL,approved_at=NULL,updated_at=%s
++             WHERE id=%d AND status='FAILED' AND provider_message_id IS NULL AND sent_at IS NULL AND send_started_at IS NULL",
++            $status,$owner_revision,$now,WFCA_Util::redact_error($note,500),$now,$id
++        ));
++        return $n===1;
++    }
++
++    /** 10.9.28: handoffs created only by a transient outbox failure (candidates for the auto-reconciler). */
++    public static function transient_handoff_candidates(int $limit): array {
++        global $wpdb;
++        $rows=$wpdb->get_results("SELECT * FROM ".self::t('conversations')." WHERE conversation_owner='HANDOFF_PENDING' AND state='HUMAN_HANDOFF' AND human_hold=1 AND opt_out=0 AND owner_reason LIKE 'OUTBOX\\_FAILED:%' ORDER BY id ASC LIMIT ".max(1,min(100,(int)$limit)),ARRAY_A);
++        return $rows?:[];
++    }
++
++    public static function latest_failed_outbox(int $conversation_id): ?array {
++        global $wpdb;
++        $row=$wpdb->get_row($wpdb->prepare("SELECT * FROM ".self::t('outbox')." WHERE conversation_id=%d AND status='FAILED' AND action_type IN ('TEMPLATE_INITIAL','FOLLOWUP') ORDER BY id DESC LIMIT 1",$conversation_id),ARRAY_A);
++        return $row?:null;
++    }
++
+     public static function defer_outbox(array $row, string $reason, int $delay_seconds): void {
+         global $wpdb;
+         $wpdb->update(self::t('outbox'), [
+diff -ru p27/wf-commercial-agent-supreme/includes/class-wfca-engine.php p28/wf-commercial-agent-supreme/includes/class-wfca-engine.php
+--- p27/wf-commercial-agent-supreme/includes/class-wfca-engine.php	2026-10-10 13:53:51.277720328 +0000
++++ p28/wf-commercial-agent-supreme/includes/class-wfca-engine.php	2026-10-10 19:13:57.828643446 +0000
+@@ -87,6 +87,8 @@
+ 
+             $stage='NURTURE_SCHEDULE'; update_option('wfca_tick_stage',$stage,false);
+             if (!$draining) self::schedule_paid_nurture();
++            $stage='RECONCILE'; update_option('wfca_tick_stage',$stage,false);
++            if (!$draining) { try { self::reconcile_transient(); } catch (Throwable $re) { WFCA_Util::health_note('RECONCILE_EXCEPTION'); } }
+             $stage='ALERTS_POST'; update_option('wfca_tick_stage',$stage,false);
+             WFCA_Alerts::process_queue(4);
+             $stage='DONE'; update_option('wfca_tick_stage',$stage,false);
+@@ -106,6 +108,7 @@
+             update_option('wfca_tick_duration_ms',max(0,(int)round((microtime(true)-$started)*1000)),false);
+             update_option('wfca_tick_result',WFCA_Util::short_text($result,64),false);
+             update_option('wfca_tick_skip_reason',WFCA_Util::short_text($skip,191),false);
++            self::health_write($result,$stage,$skip);
+             WFCA_Ownership::unlock('minute-tick');
+         }
+     }
+@@ -240,6 +243,7 @@
+                     }
+                 }
+                 if ($status==='failed') { try { $fc=WFCA_DB::get_conversation((int)$row['conversation_id']); WFCA_Util::record_delivery_failure((string)($e['body']??''),(string)($fc['phone_e164']??'')); } catch (\Throwable $ex) {} }
++                if ($status==='failed' && (string)($row['action_type']??'')==='TEMPLATE_INITIAL') { try { self::maybe_requeue_failed_d0($row,(string)$previous,(string)($e['body']??'')); } catch (\Throwable $ex) { WFCA_Util::health_note('D0_REQUEUE_EXCEPTION'); } }
+                 if ($status==='failed') WFCA_Alerts::raise('KAPSO_DELIVERY_FAILED','CRITICAL',$row['lead_record_id'],(int)$row['conversation_id'],$id,'','delivery:'.$e['provider_message_id']);
+             }
+             WFCA_DB::finish_event($id,'PROCESSED');return true;
+@@ -258,6 +262,9 @@
+             WFCA_DB::set_outbox_status($id,'CANCELLED',(string)$sent['error']);
+         } elseif (!empty($sent['ambiguous'])) {
+             WFCA_DB::update_outbox($id,['status'=>'UNCERTAIN','last_error'=>$sent['error'],'uncertain_alerted'=>1]);
++        } elseif (WFCA_Util::is_provider_credit_error($sent)) {
++            self::provider_hold_begin($id,(string)($row['lead_record_id']??''),(int)($row['conversation_id']??0));
++            WFCA_DB::hold_outbox_for_provider(WFCA_DB::get_outbox($id)?:$row,'PROVIDER_HOLD_KAPSO_402',(int)WFCA_Util::rules()['provider_hold_seconds']);
+         } else WFCA_DB::retry_outbox($row,$sent['error']??'ALERT_SEND_FAILED');
+         WFCA_Alerts::sync_outbox(WFCA_DB::get_outbox($id)?:$row);
+     }
+@@ -944,7 +951,7 @@
+         $followup_done=false;
+ 
+         for($i=0;$i<$limit;$i++) {
+-            $row=WFCA_DB::claim_outbox($worker,$mode,$draining);
++            $row=WFCA_DB::claim_outbox($worker,$mode,$draining,WFCA_Util::provider_hold_remaining()>0);
+             if (!$row) break;
+             if (($row['action_type']??'')==='FOLLOWUP' && trim((string)($row['content_sid']??''))==='') {
+                 WFCA_DB::set_outbox_status((int)$row['id'],'CANCELLED','FOLLOWUP_TEMPLATE_REQUIRED');
+@@ -1100,6 +1107,17 @@
+                         return;
+                     }
+                 }
++                if ($needs_media && !empty($live_media['ok']) && !empty(WFCA_Util::rules()['d0_presend_probe'])) {
++                    // 10.9.28 (incident 131053/503): the bytes gate is cached for hours; ask OUR server right now. A 5xx/timeout defers (no attempt burned,
++                    // no lead lost) instead of letting Meta hit the same failing URL and fail the delivery.
++                    $probe=WFCA_Airtable::d0_preview_probe((string)$live_media['url']);
++                    if (empty($probe['ok'])) {
++                        WFCA_DB::defer_outbox($row,'D0_PREVIEW_PRESEND_UNREACHABLE_'.(int)($probe['code']??0),300);
++                        WFCA_Util::health_note('D0_PRESEND_PROBE_FAIL');
++                        WFCA_Alerts::raise('D0_PREVIEW_PRESEND_UNREACHABLE','WARN',(string)$row['lead_record_id'],(int)$conv['id'],0,'','outbox:'.$id.':presend-probe');
++                        return;
++                    }
++                }
+                 $changed=false;
+                 foreach ($queued_vars as $k=>$v) {
+                     if (!preg_match('/^\d+$/',(string)$k)) continue;
+@@ -1237,6 +1255,13 @@
+                 return;
+             }
+             $error=(string)($sent['error']??'TRANSPORT_SEND_FAIL');
++            if (WFCA_Util::is_provider_credit_error($sent)) {
++                // 10.9.28: Kapso balance exhausted. Definitive rejection (nothing sent): hold ALL Kapso traffic, keep the row PENDING without burning
++                // an attempt, no handoff, one alert per episode. The hold renews itself on the next 402 and ends on the first accepted send.
++                self::provider_hold_begin((int)$row['id'],(string)$row['lead_record_id'],(int)$conv['id']);
++                WFCA_DB::hold_outbox_for_provider(WFCA_DB::get_outbox($id)?:$row,'PROVIDER_HOLD_KAPSO_402',(int)WFCA_Util::rules()['provider_hold_seconds']);
++                return;
++            }
+             if ($is_followup && self::followup_permanent_error($error)) self::fail_followup_fast(WFCA_DB::get_outbox($id)?:$row,$error);
+             else self::retry_or_alert(WFCA_DB::get_outbox($id)?:$row,$error,'CRITICAL');
+             return;
+@@ -1251,6 +1276,7 @@
+             WFCA_Alerts::raise('POST_SEND_LOCAL_COMMIT_FAIL','CRITICAL',(string)$row['lead_record_id'],(int)$conv['id'],0,$event_body,'outbox:'.$id.':local-commit');
+             return;
+         }
++        if ((int)get_option('wfca_provider_hold_until',0)>0) self::provider_hold_end();
+         WFCA_DB::insert_outbound_event((string)$sent['sid'],(string)$conv['phone_e164'],$event_body,$action);
+         $current_owner=WFCA_DB::get_conversation((int)$conv['id']);
+         if (!$current_owner || (int)$current_owner['owner_revision']!==(int)$row['owner_revision']) return;
+@@ -1578,6 +1604,7 @@
+ 
+     private static function followup_permanent_error(string $error): bool {
+         $u=strtoupper($error);
++        if (WFCA_Util::transient_outbox_error($u)) return false; // 10.9.28: 402/408/429/5xx are never permanent (402 = Kapso balance)
+         foreach (['KAPSO_HTTP_4','KAPSO_NOT_CONFIGURED','INVALID_DESTINATION','EMPTY_BODY','TEMPLATE_PAYLOAD_INVALID','TEMPLATE_HEADER_IMAGE_INVALID'] as $needle) {
+             if (str_contains($u,$needle)) return true;
+         }
+@@ -1621,10 +1648,75 @@
+         return WFCA_DB::get_outbox_by_idempotency_key($key);
+     }
+ 
++    /**
++     * 10.9.28: the D0 whose delivery counts for the follow-up ladder: the first SENT row of the chain INITIAL, INITIAL|R1, INITIAL|R2 whose delivery did
++     * not fail. A D0 that Meta reported as failed (and was not re-sent) is NOT a D0 the prospect ever saw, so no follow-up is built on it.
++     */
++    private static function effective_initial(string $lead_id,string $phone): ?array {
++        $base=hash('sha256','INITIAL|'.$lead_id.'|'.$phone);
++        $first=WFCA_DB::get_outbox_by_idempotency_key($base);
++        if (!$first) return null;
++        $chain=[$first];
++        foreach ([1,2] as $n) { $r=WFCA_DB::get_outbox_by_idempotency_key(self::d0_retry_key($lead_id,$phone,$n)); if ($r) $chain[]=$r; }
++        foreach ($chain as $r) {
++            if ((string)($r['status']??'')==='SENT' && !empty($r['provider_message_id']) && strtolower((string)($r['delivery_status']??''))!=='failed') return $r;
++        }
++        return null;
++    }
++
++    private static function d0_retry_key(string $lead_id,string $phone,int $n): string {
++        return hash('sha256','INITIAL|'.$lead_id.'|'.$phone.'|R'.$n);
++    }
++
++    /**
++     * 10.9.28: D0 reported FAILED by the provider for an infra/media reason (131053 ...): re-queue ONE new row (key INITIAL|lead|phone|R<n>, n<=max,
++     * >= gap seconds later). Only when the provider confirmed the failure, no delivered/read ever happened, this is the newest attempt of the chain,
++     * the prospect never wrote, and the conversation is still LUNA/not held/not opted out. Delivered or ambiguous messages are never duplicated.
++     */
++    private static function maybe_requeue_failed_d0(array $row,string $previous,string $fail_body): void {
++        $rules=WFCA_Util::rules();
++        if (empty($rules['d0_transient_retry_enabled'])) return;
++        $max=(int)$rules['d0_transient_retry_max'];
++        if ($max<1) return;
++        if (!in_array(strtolower($previous),['','accepted','sent','failed'],true)) return; // delivered/read => never re-send
++        if ((string)($row['status']??'')!=='SENT' || empty($row['provider_message_id'])) return;
++        if (!WFCA_Util::delivery_fail_is_transient($fail_body,(array)$rules['d0_delivery_brake_transient_codes'])) return;
++        $conv=WFCA_DB::get_conversation((int)$row['conversation_id']);
++        $lead_id=(string)($row['lead_record_id']??'');
++        if (!$conv || $lead_id==='') return;
++        $phone=(string)$conv['phone_e164'];
++        if (($conv['conversation_owner']??'')!=='LUNA' || !empty($conv['human_hold']) || !empty($conv['opt_out'])) return;
++        $sent_ts=strtotime((string)($row['sent_at']??'').' UTC');
++        $in_ts=!empty($conv['last_inbound_at'])?strtotime((string)$conv['last_inbound_at'].' UTC'):0;
++        if ($in_ts && (!$sent_ts || $in_ts>=$sent_ts)) return;
++        // Position of this row in the chain: it must be the newest existing attempt.
++        $latest=WFCA_DB::get_outbox_by_idempotency_key(hash('sha256','INITIAL|'.$lead_id.'|'.$phone));
++        $next=1;
++        if ($latest) {
++            for ($n=1;$n<=$max+1;$n++) { $r=WFCA_DB::get_outbox_by_idempotency_key(self::d0_retry_key($lead_id,$phone,$n)); if (!$r) { $next=$n;break; } $latest=$r;$next=$n+1; }
++        }
++        if (!$latest || (int)$latest['id']!==(int)$row['id']) return; // older attempt or already re-queued (redelivered webhook)
++        if ($next>$max) {
++            WFCA_Util::health_note('D0_RETRY_EXHAUSTED');
++            WFCA_Alerts::raise('D0_TRANSIENT_RETRY_EXHAUSTED','WARN',$lead_id,(int)$conv['id'],0,'','outbox:'.(int)$row['id'].':retry-exhausted');
++            return;
++        }
++        $gap=max(600,(int)$rules['d0_transient_retry_gap_seconds']);
++        $id=WFCA_DB::queue([
++            'idempotency_key'=>self::d0_retry_key($lead_id,$phone,$next),
++            'lead_record_id'=>$lead_id,'conversation_id'=>(int)$conv['id'],'action_type'=>'TEMPLATE_INITIAL',
++            'content_sid'=>(string)$row['content_sid'],'content_variables'=>(string)$row['content_variables'],'state_after'=>(string)($row['state_after']?:'WAITING_REPLY'),
++            'status'=>WFCA_Ownership::queue_status(),'next_attempt_at'=>gmdate('Y-m-d H:i:s',time()+$gap),'last_error'=>'D0_TRANSIENT_RETRY_'.$next.'_OF_OUTBOX_'.(int)$row['id']
++        ]);
++        if ($id>0) {
++            WFCA_Util::health_note('D0_REQUEUED');
++            WFCA_Airtable::update_commercial_by_phone($phone,['Commercial Error'=>'D0_TRANSIENT_RETRY_'.$next.' queued after provider media/infra failure']);
++        }
++    }
++
+     /** Determine the one next legal follow-up stage from durable provider history. */
+     private static function next_followup_stage(string $lead_id,string $phone,array $cfg): array {
+-        $initial_key=hash('sha256','INITIAL|'.$lead_id.'|'.$phone);
+-        $initial=WFCA_DB::get_outbox_by_idempotency_key($initial_key);
++        $initial=self::effective_initial($lead_id,$phone);
+         if (!$initial || (string)($initial['action_type']??'')!=='TEMPLATE_INITIAL' || (string)($initial['status']??'')!=='SENT' || empty($initial['provider_message_id']) || empty($initial['sent_at'])) return [];
+         $initial_sent=strtotime((string)$initial['sent_at'].' UTC');
+         if (!$initial_sent) return [];
+@@ -1694,6 +1786,7 @@
+         if (WFCA_Airtable::draining()) return ['reserved'=>0,'skip_reason'=>'DRAINING_NO_NEW_PROACTIVE'];
+         $mode=WFCA_Airtable::base_mode();
+         if (!in_array($mode,['ASSISTED','LIVE'],true)) return ['reserved'=>0,'skip_reason'=>'MODE_NOT_ACTIVE'];
++        if (WFCA_Util::provider_hold_remaining()>0) return ['reserved'=>0,'skip_reason'=>'PROVIDER_HOLD'];
+         $cfg=WFCA_Airtable::config();
+         $max=max(0,(int)($cfg['COMMERCIAL_MAX_FOLLOWUPS_DAY']??0));
+         if ($max<=0) return ['reserved'=>0,'skip_reason'=>'FOLLOWUP_DISABLED_BY_CONFIG'];
+@@ -1708,7 +1801,7 @@
+         $remaining=max(0,$max-$used);
+         if ($remaining<=0) return ['reserved'=>0,'skip_reason'=>'FOLLOWUP_DAILY_CAP'];
+ 
+-        $list=WFCA_Airtable::eligible_due_followups(min(max(1,$limit),$remaining));
++        $list=WFCA_Airtable::eligible_due_followups(20); // 10.9.28: was pageSize=1 (head-of-line: one stuck record starved every follow-up); reservations still stop at $limit/$remaining
+         if (empty($list['ok'])) return ['reserved'=>0,'skip_reason'=>'FOLLOWUP_AIRTABLE_READ_FAIL'];
+         $reserved=0;
+         foreach (($list['data']['records']??[]) as $rec) {
+@@ -1788,8 +1881,7 @@
+         $fresh=WFCA_DB::get_conversation((int)($conv['id']??0));
+         if (!$fresh || ($fresh['conversation_owner']??'')!=='LUNA' || !empty($fresh['opt_out']) || !empty($fresh['human_hold'])) return;
+         $phone=(string)$fresh['phone_e164'];
+-        $key=hash('sha256','INITIAL|'.(string)($fresh['lead_record_id']??'').'|'.$phone);
+-        $initial=WFCA_DB::get_outbox_by_idempotency_key($key);
++        $initial=self::effective_initial((string)($fresh['lead_record_id']??''),$phone);
+         if (!$initial || (string)($initial['action_type']??'')!=='TEMPLATE_INITIAL' || (string)($initial['status']??'')!=='SENT' || empty($initial['provider_message_id']) || empty($initial['sent_at'])) return;
+         $base=strtotime((string)$initial['sent_at'].' UTC');
+         if (!$base) return;
+@@ -1829,8 +1921,7 @@
+             if (in_array($payment,['PAID','SETTLED','COMPLETED','TERMINAL'],true) || WFCA_DB::has_terminal_payment((int)$conv['id'])) continue;
+             $last_inbound=!empty($conv['last_inbound_at'])?strtotime((string)$conv['last_inbound_at'].' UTC'):0;
+             $remote_last_inbound=!empty($cf['Last Inbound At'])?strtotime((string)$cf['Last Inbound At']):0;
+-            $initial_key=hash('sha256','INITIAL|'.$lead_id.'|'.$phone);
+-            $initial=WFCA_DB::get_outbox_by_idempotency_key($initial_key);
++            $initial=self::effective_initial($lead_id,$phone);
+             if (!$initial || (string)($initial['action_type']??'')!=='TEMPLATE_INITIAL' || (string)($initial['status']??'')!=='SENT' || empty($initial['provider_message_id']) || empty($initial['sent_at'])) continue;
+             $initial_sent=strtotime((string)$initial['sent_at'].' UTC');
+             if (!$initial_sent) continue;
+@@ -2154,23 +2245,166 @@
+         // sender quality, so it is left out of BOTH sides of the ratio. Unknown/missing code (legacy rows, odd payloads) still counts as a failure.
+         $rows=$wpdb->get_results($wpdb->prepare("SELECT o.delivery_status, CASE WHEN o.delivery_status='failed' THEN (SELECT e.body FROM ".WFCA_DB::t('events')." e WHERE e.provider_message_id=o.provider_message_id AND e.event_type='DELIVERY_FAILED' ORDER BY e.id DESC LIMIT 1) END AS fail_body FROM ".WFCA_DB::t('outbox')." o WHERE o.action_type='TEMPLATE_INITIAL' AND o.status='SENT' AND o.sent_at>%s ORDER BY o.id DESC LIMIT 10",gmdate('Y-m-d H:i:s',$since)),ARRAY_A)?:[];
+         $ignore=array_map('strval',(array)($rules['d0_delivery_brake_ignore_codes']??[]));
+-        $resolved=0;$failed=0;$ignored=0;
++        // 10.9.28: infra/media failures on OUR side (131053 ... or Meta quoting an http 5xx on our preview) are transient: the first N in the window
++        // are left out of both sides of the ratio; from the N+1th on they count again (a persistent infra problem still brakes).
++        $transient_codes=array_map('strval',(array)($rules['d0_delivery_brake_transient_codes']??['131053','131016','131000']));
++        $transient_free=max(0,(int)($rules['d0_brake_transient_free']??2));
++        $resolved=0;$failed=0;$ignored=0;$transient=0;
+         foreach ($rows as $r) {
+             $st=strtolower((string)($r['delivery_status']??''));
+             if ($st==='failed' && $ignore) {
+                 $code=WFCA_Util::delivery_fail_code_digits((string)($r['fail_body']??''));
+                 if ($code!=='' && in_array($code,$ignore,true)) { $ignored++; continue; }
+             }
++            if ($st==='failed' && $transient_free>0 && WFCA_Util::delivery_fail_is_transient((string)($r['fail_body']??''),$transient_codes)) {
++                if ($transient<$transient_free) { $transient++; continue; }
++            }
+             if (in_array($st,['delivered','read','failed'],true)) { $resolved++; if ($st==='failed') $failed++; }
+         }
+         if ($resolved<6) return false;
+         if ($failed/$resolved<=(float)$rules['d0_delivery_brake_failure_ratio']) return false;
+         update_option('wfca_d0_brake_until',time()+3600,false);
++        WFCA_Util::health_note('D0_BRAKE_TRIPPED');
+         update_option('wfca_d0_brake_released_at',time()+3600,false);
+-        WFCA_Alerts::raise('D0_DELIVERY_BRAKE:'.$failed.'/'.$resolved.'_FAILED'.($ignored?'+'.$ignored.'_RECIPIENT_SIDE_IGNORED':''),'CRITICAL','',0,0,'','d0brake:'.gmdate('YmdH'));
++        WFCA_Alerts::raise('D0_DELIVERY_BRAKE:'.$failed.'/'.$resolved.'_FAILED'.($ignored?'+'.$ignored.'_RECIPIENT_SIDE_IGNORED':'').($transient?'+'.$transient.'_TRANSIENT_FREE':''),'CRITICAL','',0,0,'','d0brake:'.gmdate('YmdH'));
+         return true;
+     }
+ 
++    /** 10.9.28: Kapso balance exhausted. Renewable hold on all Kapso traffic; ONE critical alert per episode (renewals within 1 h of expiry are the same episode). */
++    private static function provider_hold_begin(int $outbox_id,string $lead_id,int $conversation_id): void {
++        $now=time();
++        $prev_until=(int)get_option('wfca_provider_hold_until',0);
++        $started=(int)get_option('wfca_provider_hold_started_at',0);
++        update_option('wfca_provider_hold_until',$now+(int)WFCA_Util::rules()['provider_hold_seconds'],false);
++        WFCA_Util::health_note('KAPSO_HTTP_402',$now);
++        if ($started<=0 || $now>$prev_until+3600) {
++            update_option('wfca_provider_hold_started_at',$now,false);
++            WFCA_Alerts::raise('PROVIDER_CREDITS_EXHAUSTED:KAPSO_HTTP_402','CRITICAL',$lead_id,$conversation_id,0,'Kapso balance exhausted: D0, follow-up and replies are paused (not failed). Recharge to resume automatically.','provider-hold:kapso:'.$now);
++        }
++    }
++
++    private static function provider_hold_end(): void {
++        $started=(int)get_option('wfca_provider_hold_started_at',0);
++        update_option('wfca_provider_hold_until',0,false);
++        update_option('wfca_provider_hold_started_at',0,false);
++        if ($started>0) WFCA_Alerts::resolve_source('provider-hold:kapso:'.$started);
++    }
++
++    /**
++     * 10.9.28 auto-reconciler (light, every reconcile_interval_seconds, at most reconcile_max_per_run items).
++     * (1) HUMAN_HANDOFF created only by a transient outbox failure (OUTBOX_FAILED:KAPSO_HTTP_402/429/5xx, read fails, worker exception) and no inbound
++     *     from the prospect => LUNA owner, READY_FOR_CONTACT (D0) / FOLLOWUP_SCHEDULED (follow-up), human_hold=0, FAILED outbox reset on the SAME key.
++     * (2) FOLLOWUP_SCHEDULED overdue > followup_stuck_after_seconds with no outbox => cleared/re-evaluated.
++     * Real handoffs, opt-outs, Daniel-owned and any conversation with an inbound are never touched.
++     */
++    public static function reconcile_transient(): array {
++        $rules=WFCA_Util::rules();
++        $out=['recovered'=>0,'stuck_cleared'=>0,'skipped'=>''];
++        if (empty($rules['reconcile_enabled'])) { $out['skipped']='DISABLED'; return $out; }
++        $now=time();
++        if ($now-(int)get_option('wfca_reconcile_last_at',0)<(int)$rules['reconcile_interval_seconds']) { $out['skipped']='NOT_DUE'; return $out; }
++        update_option('wfca_reconcile_last_at',$now,false);
++        if (WFCA_Util::provider_hold_remaining()>0) { $out['skipped']='PROVIDER_HOLD'; return $out; }
++        $max=(int)$rules['reconcile_max_per_run'];
++        foreach (WFCA_DB::transient_handoff_candidates($max*3) as $conv) {
++            if ($out['recovered']>=$max) break;
++            if (self::reconcile_one_handoff($conv)) $out['recovered']++;
++        }
++        if ($out['recovered']<$max) $out['stuck_cleared']=self::reconcile_stuck_followups($max-$out['recovered'],$rules);
++        if ($out['recovered']>0) {
++            update_option('wfca_reconcile_recovered_total',(int)get_option('wfca_reconcile_recovered_total',0)+$out['recovered'],false);
++            WFCA_Alerts::raise('AUTO_RECOVERED_TRANSIENT_HANDOFF:'.$out['recovered'],'INFO','',0,0,'Leads restored from a transient OUTBOX_FAILED handoff and re-armed.','reconcile-run:'.gmdate('YmdHi'));
++        }
++        return $out;
++    }
++
++    private static function reconcile_one_handoff(array $conv): bool {
++        $reason=(string)($conv['owner_reason']??'');
++        if (!str_starts_with($reason,'OUTBOX_FAILED:')) return false;
++        $err=substr($reason,strlen('OUTBOX_FAILED:'));
++        if (!WFCA_Util::transient_outbox_error($err)) return false;
++        if (!empty($conv['last_inbound_at']) || !empty($conv['opt_out']) || ($conv['conversation_owner']??'')!=='HANDOFF_PENDING') return false;
++        $failed=WFCA_DB::latest_failed_outbox((int)$conv['id']);
++        if (!$failed || !WFCA_Util::transient_outbox_error((string)($failed['last_error']??'')) || !empty($failed['provider_message_id']) || !empty($failed['sent_at'])) return false;
++        $action=(string)$failed['action_type'];
++        $phone=(string)$conv['phone_e164'];
++        // Loop breaker: the same outbox is auto-recovered at most 3 times (a permanently broken lead must reach a human).
++        $seen=get_option('wfca_reconcile_seen',[]);
++        if (!is_array($seen)) $seen=[];
++        $oid=(string)(int)$failed['id'];
++        if ((int)($seen[$oid]??0)>=3) {
++            WFCA_Alerts::raise('AUTO_RECOVER_GAVE_UP:'.WFCA_Util::short_text($err,60),'WARN',(string)($failed['lead_record_id']??''),(int)$conv['id'],0,'','reconcile-giveup:'.$oid);
++            return false;
++        }
++        // ownership back to LUNA is an explicit, revision-checked change that itself re-reads the remote Opt Out / permission truth
++        $ch=WFCA_Ownership::change((int)$conv['id'],'LUNA','AUTO_RECOVER_TRANSIENT_OUTBOX',(int)$conv['owner_revision'],true);
++        if (empty($ch['ok']) || !isset($ch['revision'])) return false;
++        $target=$action==='FOLLOWUP'?'FOLLOWUP_SCHEDULED':'READY_FOR_CONTACT';
++        $fresh=WFCA_DB::upsert_conversation($phone,['state'=>$target,'human_hold'=>0,'summary'=>'AUTO_RECOVERED_TRANSIENT_OUTBOX']);
++        WFCA_Ownership::sync((int)$conv['id']);
++        $remote=['State'=>$target,'Human Handoff Reason'=>'','Commercial Error'=>'','Conversation Summary'=>'Auto-recovered after transient provider/infra failure ('.WFCA_Util::short_text($err,60).'); no prospect reply.'];
++        if ($action==='FOLLOWUP' && !empty($failed['scheduled_action_at'])) $remote['Next Commercial Action At']=gmdate('c',(int)strtotime((string)$failed['scheduled_action_at'].' UTC'));
++        WFCA_Airtable::update_commercial_by_phone($phone,$remote);
++        $rev=(int)($fresh['owner_revision']??$ch['revision']);
++        WFCA_DB::reset_failed_outbox((int)$failed['id'],$rev,WFCA_Ownership::queue_status(),'RECONCILED_FROM:'.$err);
++        $seen[$oid]=(int)($seen[$oid]??0)+1;
++        update_option('wfca_reconcile_seen',array_slice($seen,-200,null,true),false);
++        WFCA_Util::health_note('RECONCILED_HANDOFF');
++        return true;
++    }
++
++    private static function reconcile_stuck_followups(int $limit,array $rules): int {
++        $cutoff=gmdate('c',time()-(int)$rules['followup_stuck_after_seconds']);
++        $list=WFCA_Airtable::stuck_followup_scheduled($cutoff,$limit);
++        if (empty($list['ok'])) return 0;
++        $cfg=WFCA_Airtable::config();
++        $n=0;
++        foreach (($list['data']['records']??[]) as $rec) {
++            if ($n>=$limit) break;
++            $cf=$rec['fields']??[];
++            $lead_ids=(array)($cf['Lead']??[]);
++            $phone=WFCA_Util::normalize_phone((string)($cf['Phone E164']??''));
++            $due_ts=strtotime((string)($cf['Next Commercial Action At']??''));
++            if (count($lead_ids)!==1 || $phone==='' || !$due_ts) continue;
++            $lead_id=(string)$lead_ids[0];
++            $conv=WFCA_DB::get_conversation_by_phone($phone);
++            if (!$conv) continue;
++            $next=self::next_followup_stage($lead_id,$phone,$cfg);
++            $owned=false;
++            foreach ([1,2,3] as $stage) { $fo=self::followup_outbox_for_stage($lead_id,$phone,$stage); if ($fo && !in_array((string)($fo['status']??''),['SENT','CANCELLED'],true)) { $owned=true;break; } }
++            if ($owned) continue; // a live/failed follow-up outbox exists: the outbox pipeline (retry/alerts) owns it
++            $reason=self::followup_gate_reason($conv,$cf,$due_ts,true);
++            // No D0 proof (failed/never delivered) or an unsafe/stale schedule: clear it. A safe-but-unsent one returns to WAITING_REPLY so the
++            // native materializer re-evaluates it from the provider ladder instead of blocking the FOLLOWUP_SCHEDULED queue.
++            if (!$next || $reason!=='') self::clear_followup_schedule($phone,true);
++            else { WFCA_Airtable::update_commercial_by_phone($phone,['State'=>'WAITING_REPLY']); WFCA_DB::upsert_conversation($phone,['state'=>'WAITING_REPLY']); }
++            WFCA_Util::health_note('FOLLOWUP_STUCK_CLEARED');
++            WFCA_Alerts::raise('FOLLOWUP_SCHEDULED_STUCK:'.($next?($reason?:'REEVALUATE'):'NO_D0_PROOF'),'WARN',$lead_id,(int)$conv['id'],0,'','followup-stuck:'.$lead_id.':'.gmdate('Ymd'));
++            $n++;
++        }
++        return $n;
++    }
++
++    /** 10.9.28: one-call snapshot for the watchdog (option wfca_health_v1). Options only, no network, no heavy query. */
++    private static function health_write(string $result,string $stage,string $skip): void {
++        try {
++            $brake_until=(int)get_option('wfca_d0_brake_until',0);
++            $hold_until=(int)get_option('wfca_provider_hold_until',0);
++            $ring=WFCA_Util::health_fail_by_code_1h();
++            $codes=[];$events=[];
++            foreach ($ring as $k=>$v) { if (str_starts_with($k,'code_')||$k==='NO_DETAIL'||str_starts_with($k,'KAPSO_')) $codes[$k]=$v; else $events[$k]=$v; }
++            update_option('wfca_health_v1',[
++                'v'=>1,'at'=>gmdate('c'),'last_tick_at'=>(string)get_option('wfca_last_tick_at',''),'tick_result'=>$result,'tick_stage'=>$stage,'tick_skip_reason'=>$skip,
++                'brake_active'=>$brake_until>time(),'brake_until'=>$brake_until>time()?gmdate('c',$brake_until):'',
++                'provider_hold_active'=>$hold_until>time(),'provider_hold_until'=>$hold_until>time()?gmdate('c',$hold_until):'',
++                'fail_by_code_1h'=>$codes,'events_1h'=>$events,
++                'reconcile_last_at'=>(int)get_option('wfca_reconcile_last_at',0)?gmdate('c',(int)get_option('wfca_reconcile_last_at',0)):'',
++                'reconcile_recovered_total'=>(int)get_option('wfca_reconcile_recovered_total',0),
++                'tick_overlap_skip_count'=>(int)get_option('wfca_tick_overlap_skip_count',0),
++            ],false);
++        } catch (\Throwable $e) {}
++    }
++
+     public static function schedule_initial_contacts(): void {
+         if (WFCA_Airtable::draining()) return;
+         $mode=WFCA_Airtable::base_mode();
+@@ -2199,6 +2433,7 @@
+             if ($latest_ts && time() < ($latest_ts+$jittered)) return;
+         }
+         if (self::d0_delivery_brake_active($rules)) return;
++        if (WFCA_Util::provider_hold_remaining()>0) return; // 10.9.28: Kapso balance exhausted, do not reserve (cap/spacing slots) until it clears
+ 
+         $max=max(0,(int)($cfg['COMMERCIAL_MAX_NEW_CONTACTS_DAY']??15));
+         if ($max===0) return;
+diff -ru p27/wf-commercial-agent-supreme/includes/class-wfca-rest.php p28/wf-commercial-agent-supreme/includes/class-wfca-rest.php
+--- p27/wf-commercial-agent-supreme/includes/class-wfca-rest.php	2026-10-10 13:53:51.215825638 +0000
++++ p28/wf-commercial-agent-supreme/includes/class-wfca-rest.php	2026-10-10 19:12:08.185277744 +0000
+@@ -195,6 +195,7 @@
+             'tick_exception'=>get_option('wfca_tick_exception'),
+             'tick_overlap_skipped_at'=>get_option('wfca_tick_overlap_skipped_at'),
+             'tick_overlap_skip_count'=>(int)get_option('wfca_tick_overlap_skip_count',0),
++            'health_v1'=>get_option('wfca_health_v1',null),
+             'next_tick'=>wp_next_scheduled('wfca_minute_tick')?:null,
+             'commercial_windows'=>$windows!==''?$windows:null,
+             'autonomous_outbound_active'=>$base_mode==='LIVE' && !$draining && $readiness && $proactive && $windows!=='' && WFCA_Util::inside_window($windows),
+diff -ru p27/wf-commercial-agent-supreme/includes/class-wfca-util.php p28/wf-commercial-agent-supreme/includes/class-wfca-util.php
+--- p27/wf-commercial-agent-supreme/includes/class-wfca-util.php	2026-10-10 13:53:51.274014847 +0000
++++ p28/wf-commercial-agent-supreme/includes/class-wfca-util.php	2026-10-10 19:09:46.474429571 +0000
+@@ -76,6 +76,51 @@
+         return preg_match('/^WA_ERR code=(\d{3,8})(?!\d)/',$body,$m)?$m[1]:'';
+     }
+ 
++    /** 10.9.28: true when a failed-delivery body is infra/media trouble on OUR side (configured codes, or Meta quoting an http 5xx while fetching our media). */
++    public static function delivery_fail_is_transient(string $body,array $codes): bool {
++        $code=self::delivery_fail_code_digits($body);
++        if ($code!=='' && in_array($code,array_map('strval',$codes),true)) return true;
++        return (bool)preg_match('/(?:http code|status code|http status)\s*5\d\d/i',$body);
++    }
++
++    /** 10.9.28: Kapso/Meta prepaid balance exhausted (HTTP 402 / insufficient_credits). Definitive provider rejection: nothing was sent. */
++    public static function is_provider_credit_error(array $sent): bool {
++        if ((int)($sent['http_code']??0)===402 || strtoupper((string)($sent['error']??''))==='KAPSO_HTTP_402') return true;
++        return stripos((string)($sent['detail']??''),'insufficient_credits')!==false;
++    }
++
++    /** 10.9.28: outbox errors that say nothing about the lead: provider balance/rate/5xx and our own read/worker hiccups. Never a reason for a human handoff. */
++    public static function transient_outbox_error(string $error): bool {
++        $u=strtoupper($error);
++        if (preg_match('/KAPSO_HTTP_(402|408|429|5\d\d)/',$u)) return true;
++        foreach (['AIRTABLE_LEAD_READ_FAIL','COMMERCIAL_STATE_READ_FAIL','WORKER_EXCEPTION'] as $n) if (str_contains($u,$n)) return true;
++        return false;
++    }
++
++    /** Seconds left of the provider hold (Kapso balance exhausted), 0 when none. */
++    public static function provider_hold_remaining(): int {
++        return max(0,(int)get_option('wfca_provider_hold_until',0)-time());
++    }
++
++    /** Rolling ring (last 200) of failure events for the health snapshot; diagnostic only, never read by a send gate. */
++    public static function health_note(string $key,?int $now=null): void {
++        try {
++            $ring=get_option('wfca_health_ring',[]);
++            if (!is_array($ring)) $ring=[];
++            $ring[]=[$now??time(),substr(preg_replace('/[^A-Za-z0-9_.\-]/','',$key),0,40)];
++            update_option('wfca_health_ring',array_slice($ring,-200),false);
++        } catch (\Throwable $e) {}
++    }
++
++    public static function health_fail_by_code_1h(?int $now=null): array {
++        $now=$now??time();$out=[];
++        $ring=get_option('wfca_health_ring',[]);
++        if (!is_array($ring)) return [];
++        foreach ($ring as $r) { if (is_array($r) && (int)$r[0]>=$now-3600) $out[(string)$r[1]]=(int)($out[(string)$r[1]]??0)+1; }
++        ksort($out);
++        return $out;
++    }
++
+     public static function delivery_fail_code(string $body): string {
+         if (preg_match('/^WA_ERR code=([A-Za-z0-9_.\-]{1,12})/',$body,$m)) return 'code_'.$m[1];
+         return 'NO_DETAIL';
+@@ -97,6 +142,7 @@
+             ksort($days);
+             $days=array_slice($days,-7,null,true);
+             update_option('wfca_delivery_fail_counters',['codes'=>$codes,'days'=>$days],false);
++            self::health_note($key,$now);
+         } catch (\Throwable $e) {}
+     }
+ 
+@@ -221,7 +267,13 @@
+             'd0_jitter_max'=>0.25,'d0_delivery_brake_enabled'=>true,'d0_delivery_brake_failure_ratio'=>0.30,'d0_min_preview_bytes'=>150000,
+             // 10.9.27: Meta errors that say nothing about OUR sender quality (130472 user is in a Meta experiment, 131026 recipient cannot receive).
+             // They no longer count toward the delivery brake. Set [] in WFCA_RULES_V1 to restore the old behaviour.
+-            'd0_delivery_brake_ignore_codes'=>['130472','131026']];
++            'd0_delivery_brake_ignore_codes'=>['130472','131026'],
++            // 10.9.28: infra/media errors are OUR side (131053 = Meta could not download the preview from our server). They are transient:
++            // the first d0_brake_transient_free of them in the brake window do not count, and the D0 is re-queued (see d0_transient_retry_*).
++            'd0_delivery_brake_transient_codes'=>['131053','131016','131000'],'d0_brake_transient_free'=>2,
++            'd0_transient_retry_enabled'=>true,'d0_transient_retry_max'=>2,'d0_transient_retry_gap_seconds'=>600,
++            'd0_presend_probe'=>true,'provider_hold_seconds'=>600,
++            'reconcile_enabled'=>true,'reconcile_max_per_run'=>5,'reconcile_interval_seconds'=>600,'followup_stuck_after_seconds'=>7200];
+         if (!class_exists('WFCA_Airtable')) return $d;
+         $cfg=WFCA_Airtable::config();
+         $j=json_decode(trim((string)($cfg['WFCA_RULES_V1']??'')),true);
+@@ -238,6 +290,17 @@
+             foreach (array_slice($j['d0_delivery_brake_ignore_codes'],0,10) as $x) { if (is_scalar($x) && preg_match('/^\d{3,8}$/',trim((string)$x))) $codes[]=trim((string)$x); }
+             $d['d0_delivery_brake_ignore_codes']=array_values(array_unique($codes));
+         }
++        if (array_key_exists('d0_delivery_brake_transient_codes',$j) && is_array($j['d0_delivery_brake_transient_codes'])) {
++            $codes=[];
++            foreach (array_slice($j['d0_delivery_brake_transient_codes'],0,10) as $x) { if (is_scalar($x) && preg_match('/^\d{3,8}$/',trim((string)$x))) $codes[]=trim((string)$x); }
++            $d['d0_delivery_brake_transient_codes']=array_values(array_unique($codes));
++        }
++        foreach (['d0_brake_transient_free'=>[0,10],'d0_transient_retry_max'=>[0,2],'d0_transient_retry_gap_seconds'=>[600,86400],'provider_hold_seconds'=>[120,3600],'reconcile_max_per_run'=>[1,20],'reconcile_interval_seconds'=>[300,3600],'followup_stuck_after_seconds'=>[3600,86400]] as $k=>[$lo,$hi]) {
++            if (isset($j[$k]) && is_numeric($j[$k])) $d[$k]=max($lo,min($hi,(int)$j[$k]));
++        }
++        foreach (['d0_transient_retry_enabled','d0_presend_probe','reconcile_enabled'] as $k) {
++            if (array_key_exists($k,$j)) $d[$k]=filter_var($j[$k],FILTER_VALIDATE_BOOLEAN);
++        }
+         foreach (['auto_resume_extra_blocked_states'=>'/^[A-Z_]{3,40}$/','gatekeeper_extra_hostile_words'=>'/^.{2,30}$/u'] as $k=>$re) {
+             if (!is_array($j[$k]??null)) continue;
+             foreach (array_slice($j[$k],0,40) as $x) { $x=trim((string)$x); if ($x!=='' && preg_match($re,$x)) $d[$k][]=$k==='gatekeeper_extra_hostile_words'?self::lower($x):$x; }
+diff -ru p27/wf-commercial-agent-supreme/test/test-delivery-fail-counters.php p28/wf-commercial-agent-supreme/test/test-delivery-fail-counters.php
+--- p27/wf-commercial-agent-supreme/test/test-delivery-fail-counters.php	2026-10-10 13:53:51.211103418 +0000
++++ p28/wf-commercial-agent-supreme/test/test-delivery-fail-counters.php	2026-10-10 19:13:42.218705860 +0000
+@@ -53,7 +53,7 @@
+ foreach ([true,false] as $with) foreach ([[8,2],[6,4]] as [$d,$f]) {
+   $GLOBALS['opts']=[];WFCA_Alerts::$raised=[];$wpdb->rows=rows($d,$f);
+   if($with) for($i=0;$i<500;$i++) WFCA_Util::record_delivery_failure('WA_ERR code=1 title=x','1111',$t0);
+-  $r=$m->invoke(null,$rules);$o=$GLOBALS['opts'];unset($o[$K]);
++  $r=$m->invoke(null,$rules);$o=$GLOBALS["opts"];unset($o[$K],$o["wfca_health_ring"]);
+   $res[$with?'with':'without'][]=[$r,$o,count(WFCA_Alerts::$raised)];
+ }
+ t('brake result, options and alerts identical with and without counters',$res['with']===$res['without']&&$res['with'][0][0]===false&&$res['with'][1][0]===true);
+Only in p28/wf-commercial-agent-supreme/test: test-resilience-10928.php
+Only in p28/wf-commercial-agent-supreme/test: test-resilience-db-shape.php
+diff -ru p27/wf-commercial-agent-supreme/wf-commercial-agent.php p28/wf-commercial-agent-supreme/wf-commercial-agent.php
+--- p27/wf-commercial-agent-supreme/wf-commercial-agent.php	2026-10-10 13:53:51.273646573 +0000
++++ p28/wf-commercial-agent-supreme/wf-commercial-agent.php	2026-10-10 19:12:03.913889447 +0000
+@@ -2,7 +2,7 @@
+ /**
+  * Plugin Name: Website Factory — Commercial Agent
+  * Description: Website Factory Commercial Agent: stable config-driven WhatsApp effect plane with transactional outbox, lifetime D0 idempotency, strict real spacing, per-lead media template capability, gated approved-template follow-up, owner/opt-out/payment fences, Kapso/Meta transport, InfinitePay verification and protected observability.
+- * Version: 10.9.27-BRAKE-BY-CODE-RC1
++ * Version: 10.9.28-RESILIENCE-RC1
+  * Author: Daniel Freire
+  * Requires at least: 6.5
+  * Requires PHP: 8.0
+@@ -10,7 +10,7 @@
+ 
+ if (!defined('ABSPATH')) exit;
+ 
+-define('WFCA_VERSION', '10.9.27-BRAKE-BY-CODE-RC1');
++define('WFCA_VERSION', '10.9.28-RESILIENCE-RC1');
+ define('WFCA_SCHEMA_VERSION', '10.4.0');
+ define('WFCA_DIR', plugin_dir_path(__FILE__));
+ define('WFCA_URL', plugin_dir_url(__FILE__));
