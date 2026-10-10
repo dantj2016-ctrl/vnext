@@ -16,3 +16,16 @@
 - vigia/plugins/10.9.29/: zip + SHA256 + AUDIT (premortem, 20 achados) + PATCH-NOTES + diff p28->p29. Testes offline: 37 arquivos, 0 falhas (revisado e rerodado por mim).
 - Politica de agenda invalida: last-known-good (48 h) + alerta; d0_stall_reason/d0_age_s em wfca_health_v1; alertas CRITICAL sem SMTP (wfca_alerts_ring); 5xx ambiguo do D0 sem handoff e sem reenvio; reconciliador com disjuntor (10/h); cursor no materializador de follow-up.
 - Instalar depois das 21h BRT ou no domingo; conferir wfca_health_v1 e o 1o D0 de segunda com assinatura 10.9.29.
+
+## 2026-10-10 ~23:00Z — Plano de correção (pós-print "R$700" para robô)
+
+**Achado:** a resposta automática do WhatsApp Business de uma clínica foi tratada como humano e recebeu "R$700 na opção de entrada." (causa: detector de robô sem as frases + regra de preço disparando em "investimento"). Nas 8 entradas de hoje não marcadas como AUTO_REPLY, quase todas eram robôs → "conversas/engajadas" estão infladas; resposta humana real hoje ≈ 0.
+
+**Feito (P0):** plugin 10.9.30-AUTORESPONDER-PRICE-GUARD-RC1 (`vigia/plugins/10.9.30/`), 38 arquivos de teste, 0 falhas. Precisa ser instalado pelo Daniel.
+
+**Próximos (ordem):**
+- P1 Limpar estado: conversas ENGAGED/QUESTION/PRICE que são robôs → voltar a WAITING_REPLY (depois da instalação; checar se a Luna já respondeu a outros robôs).
+- P2 Métrica real: taxa de resposta humana = respostas não-AUTO_REPLY / D0, por nicho, cidade, logo, template e dia da semana (sábado vs dia útil).
+- P3 Copy do preço (decisão do Daniel): trocar "R$700 na opção de entrada." por resposta com contexto (o que inclui).
+- P4 Abastecimento: Finder + caps de descoberta no Worker (domingo); fila Prepared quase vazia.
+- P5 Causa raiz do REQUEST_FILE_MISSING do Autopilot (3x hoje, só quarentena aplicada).

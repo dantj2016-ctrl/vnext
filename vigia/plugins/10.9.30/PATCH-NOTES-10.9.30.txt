@@ -1,0 +1,18 @@
+10.9.30-AUTORESPONDER-PRICE-GUARD-RC1  (parent: 10.9.29-SELFHEAL-RC1)
+
+CAUSA RAIZ (print de 2026-10-10 19:37 BRT): a resposta automatica do WhatsApp Business de uma clinica
+("Nosso atendimento e de segunda a sabado... Estamos localizados... O investimento para a consulta e de R$ 290...
+Aguarde um momento que voce ja sera atendido") nao bateu em nenhuma frase do detector is_likely_autoresponder().
+Foi tratada como humano; a palavra "investimento" disparou a regra de preco (PRICE_ASK) e a Luna respondeu seca:
+"R$700 na opcao de entrada." para um robo. Tambem inflava "conversas": nas 8 entradas nao marcadas de hoje, quase todas eram robos.
+
+MUDANCAS (somente class-wfca-engine.php + versao):
+1. is_likely_autoresponder(): +20 frases fortes observadas hoje (away/greeter/horario/"ja te responde"/"deixe uma mensagem"/menu "escolha uma das opcoes").
+2. looks_like_info_dump(): mensagem longa (>=220) sem "?" com 2 de 3 blocos (preco / endereco / horario) = robo.
+3. deterministic_decision(): palavra de preco dentro de mensagem longa (>200) sem "?" nao e PRICE_ASK (a clinica citando o proprio preco, nao perguntando o nosso).
+Seguranca preservada: opt-out, rejeicao clara, intencao comercial humana ("quanto custa", "quero fechar"...) continuam ganhando de qualquer frase de robo.
+Sem mbstring obrigatorio (fallback strlen). Transporte Kapso, outbox, ritmo, freio, reconciler: INALTERADOS.
+
+TESTES: test/test-autoresponder-price-guard-10930.php (20 casos: 8 robos reais, 8 humanos, 4 de preco). Suite: 38 arquivos, 0 falhas.
+ROLLBACK: reinstalar o zip 10.9.29-SELFHEAL-RC1.
+LIMITE CONHECIDO: nao muda o texto seco "R$700 na opcao de entrada." quando um humano de fato pergunta preco (decisao de copy pendente).

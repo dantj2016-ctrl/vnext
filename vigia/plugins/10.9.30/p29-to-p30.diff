@@ -1,0 +1,100 @@
+diff -ru ../p29/wf-commercial-agent-supreme/includes/class-wfca-engine.php wf-commercial-agent-supreme/includes/class-wfca-engine.php
+--- ../p29/wf-commercial-agent-supreme/includes/class-wfca-engine.php	2026-10-10 20:15:35.280812836 +0000
++++ wf-commercial-agent-supreme/includes/class-wfca-engine.php	2026-10-10 22:42:52.749326183 +0000
+@@ -612,7 +612,9 @@
+         if (WFCA_Util::contains_any($t,['quais os planos','quais planos','quais as opções','quais as opcoes','opções de site','opcoes de site','tem outros planos','outros valores'])) {
+             return ['action'=>'PRICE_OPTIONS','message'=>'','offer_code'=>'NONE','reason'=>'PRICE_OPTIONS_ASK','confidence'=>1];
+         }
+-        if (preg_match('/\b(quanto|valor|preço|preco|custa|investimento|parcel|qual o valor)\b/u',$t)) {
++        // 10.9.30: a price word inside a long statement with no question is the clinic quoting its OWN prices, not asking ours.
++        $price_is_ask=!((function_exists('mb_strlen')?mb_strlen($t):strlen($t))>200 && !str_contains($t,'?'));
++        if ($price_is_ask && preg_match('/\b(quanto|valor|preço|preco|custa|investimento|parcel|qual o valor)\b/u',$t)) {
+             return ['action'=>'PRICE','message'=>'','offer_code'=>'ENTRY','reason'=>'PRICE_ASK','confidence'=>1];
+         }
+         if (preg_match('/\b(manda o site|mande o site|ver o site|mostrar o site|link do site|cadê o site|cade o site)\b/u',$t)) {
+@@ -694,9 +696,24 @@
+             'seja muito bem-vinda','seja muito bem-vindo','seja muito bem vinda','seja muito bem vindo',
+             'agradecemos sua mensagem','agradecemos a sua mensagem',
+             'não estamos disponíveis no momento','nao estamos disponiveis no momento',
+-            'responderemos assim que possível','responderemos assim que possivel'
++            'responderemos assim que possível','responderemos assim que possivel',
++            // 10.9.30: real clinic away/greeter messages of 2026-10-10 that were treated as humans (one even triggered a price reply).
++            'aguarde um momento que você já será atendido','aguarde um momento que voce ja sera atendido',
++            'nossa equipe não está disponível','nossa equipe nao esta disponivel',
++            'nosso horário de funcionamento','nosso horario de funcionamento',
++            'sua mensagem é importante','sua mensagem e importante',
++            'recebemos sua mensagem','já te responde por aqui','ja te responde por aqui',
++            'que alegria receber sua mensagem','que bom receber você na','que bom receber voce na',
++            'é um prazer receber o seu contato','e um prazer receber o seu contato','breve te retornamos',
++            'em breve, vou seguir com o seu atendimento','em breve vou seguir com o seu atendimento',
++            'por favor deixe uma mensagem','agradecemos por entrar em contato',
++            'escolha uma das opções abaixo','escolha uma das opcoes abaixo','digite o número da opção','digite o numero da opcao',
++            'vou retornar pessoalmente assim que possível','vou retornar pessoalmente assim que possivel'
+         ];
+         if (WFCA_Util::contains_any($t,$strong)) return true;
++        // 10.9.30 structural net: a long info dump (address + hours + price/consultation terms) with no question for us is a business
++        // auto-reply even when no greeter phrase matches. Two of the three blocks are required, and length >= 220 chars.
++        if (self::looks_like_info_dump($t)) return true;
+         $markers=0;
+         foreach (['como podemos ajudar','informe seu nome','nome e sobrenome','nome completo','data de nascimento','plano de saúde','plano de saude','qual procedimento','esta é a sua primeira vez','esta e a sua primeira vez','razão da sua consulta','razao da sua consulta','data de sua preferência','data de sua preferencia','horário de sua preferência','horario de sua preferencia','retornaremos em breve','responderemos em breve','estarei responsável pelo seu atendimento','estarei responsavel pelo seu atendimento','como posso te ajudar','como posso estar te ajudando','como posso ajudar','sou da equipe','sou secretária da','sou secretaria da','que bom receber sua mensagem','ficamos felizes em receber o seu contato'] as $m) {
+             if (str_contains($t,$m)) $markers++;
+@@ -704,6 +721,16 @@
+         return $markers>=2;
+     }
+ 
++    /** 10.9.30: long automatic info message (address/hours/price blocks) that never addresses us. Pure function. */
++    private static function looks_like_info_dump(string $t): bool {
++        if ((function_exists('mb_strlen')?mb_strlen($t):strlen($t))<220 || str_contains($t,'?')) return false;
++        $blocks=0;
++        if (preg_match('/\b(r\$\s?\d|investimento|valor da consulta|sinal)\b/u',$t) || preg_match('/r\$\s?\d/u',$t)) $blocks++;
++        if (preg_match('/\b(estamos localizados|endere[çc]o|av\.|avenida|rua\s+\p{L}+)\b/u',$t)) $blocks++;
++        if (preg_match('/\b(segunda\s+(?:a|à|ate|até)|das\s+\d{1,2}\s?h|hor[áa]rio de (?:atendimento|funcionamento)|nosso atendimento [ée] de)\b/u',$t)) $blocks++;
++        return $blocks>=2;
++    }
++
+     /**
+      * Only an explicit, user-authored opt-out phrase may trigger the irreversible
+      * hard stop. Model output is advisory and must not widen this allowlist.
+Only in wf-commercial-agent-supreme/test: test-autoresponder-price-guard-10930.php
+diff -ru ../p29/wf-commercial-agent-supreme/test/test-resilience-10928.php wf-commercial-agent-supreme/test/test-resilience-10928.php
+--- ../p29/wf-commercial-agent-supreme/test/test-resilience-10928.php	2026-10-10 20:10:57.651653027 +0000
++++ wf-commercial-agent-supreme/test/test-resilience-10928.php	2026-10-10 22:42:52.749945112 +0000
+@@ -238,6 +238,6 @@
+ t('health with no brake/hold reports inactive',$h['brake_active']===false&&$h['provider_hold_active']===false&&$h['brake_until']===''&&$h['fail_by_code_1h']===[]);
+ t('tick writes the health snapshot in finally and runs the reconciler',str_contains($src,'self::health_write($result,$stage,$skip);')&&str_contains($src,'self::reconcile_transient();'));
+ t('health is exposed on /commercial/health details',str_contains(file_get_contents(__DIR__.'/../includes/class-wfca-rest.php'),"'health_v1'=>get_option('wfca_health_v1',null)"));
+-t('version bumped in header and constant (10.9.28 line kept green by accepting its successor)',preg_match('/Version: 10\.9\.(28-RESILIENCE|29-SELFHEAL)-RC1/',file_get_contents(__DIR__.'/../wf-commercial-agent.php'))&&preg_match("/define\('WFCA_VERSION', '10\.9\.(28-RESILIENCE|29-SELFHEAL)-RC1'\)/",file_get_contents(__DIR__.'/../wf-commercial-agent.php')));
++t('version bumped in header and constant (10.9.28 line kept green by accepting its successor)',preg_match('/Version: 10\.9\.(28-RESILIENCE|29-SELFHEAL|30-AUTORESPONDER-PRICE-GUARD)-RC1/',file_get_contents(__DIR__.'/../wf-commercial-agent.php'))&&preg_match("/define\('WFCA_VERSION', '10\.9\.(28-RESILIENCE|29-SELFHEAL|30-AUTORESPONDER-PRICE-GUARD)-RC1'\)/",file_get_contents(__DIR__.'/../wf-commercial-agent.php')));
+ t('send-time preview probe defers (no attempt burned) before the template send, behind a rules switch',str_contains($src,'d0_preview_probe((string)$live_media[\'url\'])')&&str_contains($src,"'D0_PREVIEW_PRESEND_UNREACHABLE_'")&&strpos($src,'d0_preview_probe(')<strpos($src,'WFCA_Transport::send($row,\'\',$content_sid,$variables)'));
+ echo "TOTAL PASS=$pass FAIL=$fail\n";exit($fail?1:0);
+diff -ru ../p29/wf-commercial-agent-supreme/test/test-selfheal-engine-10929.php wf-commercial-agent-supreme/test/test-selfheal-engine-10929.php
+--- ../p29/wf-commercial-agent-supreme/test/test-selfheal-engine-10929.php	2026-10-10 20:15:46.052797421 +0000
++++ wf-commercial-agent-supreme/test/test-selfheal-engine-10929.php	2026-10-10 22:42:52.750586888 +0000
+@@ -251,5 +251,5 @@
+ 
+ t('G5/noncanonical/variable-missing errors are not re-PATCHed when the record already carries them (Airtable 429 flood guard)',substr_count($src,"(\$f['Commercial Error']??'')!==")>=3);
+ t('tick: time limit + send budget, optional stages skipped over budget',str_contains($src,'@set_time_limit($tl)')&&str_contains($src,'self::tick_over_budget()')&&str_contains($src,"if (\$i>0 && self::tick_over_budget()) break;"));
+-t('version is 10.9.29-SELFHEAL-RC1',str_contains(file_get_contents(__DIR__.'/../wf-commercial-agent.php'),"define('WFCA_VERSION', '10.9.29-SELFHEAL-RC1')")&&str_contains(file_get_contents(__DIR__.'/../wf-commercial-agent.php'),'Version: 10.9.29-SELFHEAL-RC1'));
++t('version is 10.9.29 or its successor',preg_match("/define\('WFCA_VERSION', '10\.9\.(29-SELFHEAL|30-AUTORESPONDER-PRICE-GUARD)-RC1'\)/",file_get_contents(__DIR__.'/../wf-commercial-agent.php'))===1);
+ echo "TOTAL PASS=$pass FAIL=$fail\n";exit($fail?1:0);
+diff -ru ../p29/wf-commercial-agent-supreme/wf-commercial-agent.php wf-commercial-agent-supreme/wf-commercial-agent.php
+--- ../p29/wf-commercial-agent-supreme/wf-commercial-agent.php	2026-10-10 20:10:57.651055674 +0000
++++ wf-commercial-agent-supreme/wf-commercial-agent.php	2026-10-10 22:41:14.047173811 +0000
+@@ -2,7 +2,7 @@
+ /**
+  * Plugin Name: Website Factory — Commercial Agent
+  * Description: Website Factory Commercial Agent: stable config-driven WhatsApp effect plane with transactional outbox, lifetime D0 idempotency, strict real spacing, per-lead media template capability, gated approved-template follow-up, owner/opt-out/payment fences, Kapso/Meta transport, InfinitePay verification and protected observability.
+- * Version: 10.9.29-SELFHEAL-RC1
++ * Version: 10.9.30-AUTORESPONDER-PRICE-GUARD-RC1
+  * Author: Daniel Freire
+  * Requires at least: 6.5
+  * Requires PHP: 8.0
+@@ -10,7 +10,7 @@
+ 
+ if (!defined('ABSPATH')) exit;
+ 
+-define('WFCA_VERSION', '10.9.29-SELFHEAL-RC1');
++define('WFCA_VERSION', '10.9.30-AUTORESPONDER-PRICE-GUARD-RC1');
+ define('WFCA_SCHEMA_VERSION', '10.4.0');
+ define('WFCA_DIR', plugin_dir_path(__FILE__));
+ define('WFCA_URL', plugin_dir_url(__FILE__));
