@@ -1,0 +1,11 @@
+10.9.31-PRICE-REPLY-CONTEXT-RC1  (parent: 10.9.30-AUTORESPONDER-PRICE-GUARD-RC1)
+
+PROBLEMA: quando um humano pergunta preco, a Luna respondia seco: "R$700 na opcao de entrada."
+MUDANCA (so class-wfca-engine.php + versao): nova funcao price_reply() monta a resposta SOMENTE com o que o catalogo documenta
+(COMMERCIAL_OFFER_CATALOG: nome + condicao de pagamento) e termina oferecendo explicar o escopo:
+  "A opcao de entrada e a Landing Page Premium: R$700 a vista ou 12x de R$58,33 sem juros. Posso te explicar por aqui o que esta incluso e como funciona a entrega?"
+NAO afirma entregaveis, prazo, dominio, hospedagem, revisoes nem garantia (nao estao documentados). O escopo continua sendo explicado por uma pessoa.
+Fallbacks: sem 'terms' usa o valor; sem nome omite o nome.
+TESTE: test/test-price-reply-10931.php (14 casos, inclui 'nunca inventa escopo'). Suite: 39 arquivos, 0 falhas.
+ROLLBACK: reinstalar 10.9.30. Nada de Kapso/outbox/ritmo/freio/reconciler mudou.
+LIMITE: o estado PRICE_STATE continua tirando a Luna da conversa (decisao antiga): depois do preco, quem responde e o Daniel.

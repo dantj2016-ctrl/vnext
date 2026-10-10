@@ -29,3 +29,9 @@
 - P3 Copy do preço (decisão do Daniel): trocar "R$700 na opção de entrada." por resposta com contexto (o que inclui).
 - P4 Abastecimento: Finder + caps de descoberta no Worker (domingo); fila Prepared quase vazia.
 - P5 Causa raiz do REQUEST_FILE_MISSING do Autopilot (3x hoje, só quarentena aplicada).
+
+## 2026-10-10 ~23:15Z — fechamento de pendências
+- Plugin 10.9.31 (preço com contexto, só fatos do catálogo). Instalar e ativar.
+- Economia observada hoje: Kapso ≈ US$0,022 por mensagem (166 msgs ≈ US$3,64); OpenAI ledger ≈ US$3,44. Saldo Kapso informado: US$6,46 (≈ 290 msgs).
+- Métrica de segunda: resposta humana = entradas em Touches (INBOUND) que não são AUTO_REPLY nem OWNER_HOLD, ÷ D0 enviados; quebrar por nicho, cidade, logo, template, dia.
+- Gate de decisão (Quarta 14/10 18h BRT): com ≥300 mensagens enviadas e zero respostas humanas, parar de produzir e revisar oferta/mensagem antes de gastar mais.

@@ -1,0 +1,75 @@
+diff -ru ../p30/wf-commercial-agent-supreme/includes/class-wfca-engine.php wf-commercial-agent-supreme/includes/class-wfca-engine.php
+--- ../p30/wf-commercial-agent-supreme/includes/class-wfca-engine.php	2026-10-10 22:42:52.749326183 +0000
++++ wf-commercial-agent-supreme/includes/class-wfca-engine.php	2026-10-10 23:05:06.000784994 +0000
+@@ -721,6 +721,19 @@
+         return $markers>=2;
+     }
+ 
++    /**
++     * 10.9.31: price answer with context. Uses ONLY what the offer catalog documents (name + payment terms); it never states
++     * deliverables, deadlines or guarantees. The scope is explained by a person, so it ends with an offer to explain.
++     */
++    private static function price_reply(array $offer): string {
++        $amount='R$'.number_format(((int)($offer['amount']??0))/100,0,',','.');
++        $terms=trim((string)($offer['terms']??''));
++        $name=trim((string)($offer['name']??''));
++        $value=($terms!=='' && str_contains($terms,'R$')) ? $terms : $amount;
++        $lead=$name!=='' ? 'A opção de entrada é a '.$name.': ' : 'A opção de entrada é ';
++        return $lead.$value.'. Posso te explicar por aqui o que está incluso e como funciona a entrega?';
++    }
++
+     /** 10.9.30: long automatic info message (address/hours/price blocks) that never addresses us. Pure function. */
+     private static function looks_like_info_dump(string $t): bool {
+         if ((function_exists('mb_strlen')?mb_strlen($t):strlen($t))<220 || str_contains($t,'?')) return false;
+@@ -804,7 +817,7 @@
+         if ($action==='PRICE') {
+             $offer=self::offer('ENTRY');
+             if (!$offer) { self::handoff($phone,'OFFER_CATALOG_UNAVAILABLE',$lead_id,(int)$conv['id'],(int)$event['id'],(string)$event['body'],$source_sid,$status,true); return; }
+-            $price='R$'.number_format($offer['amount']/100,0,',','.').' na opção de entrada.';
++            $price=self::price_reply($offer);
+             self::queue_message($conv,$lead_id,'PRICE',$price,'PRICE_STATE',$status,'ENTRY',$source_sid);
+             return;
+         }
+Only in wf-commercial-agent-supreme/test: test-price-reply-10931.php
+diff -ru ../p30/wf-commercial-agent-supreme/test/test-resilience-10928.php wf-commercial-agent-supreme/test/test-resilience-10928.php
+--- ../p30/wf-commercial-agent-supreme/test/test-resilience-10928.php	2026-10-10 22:42:52.749945112 +0000
++++ wf-commercial-agent-supreme/test/test-resilience-10928.php	2026-10-10 23:05:06.001049220 +0000
+@@ -238,6 +238,6 @@
+ t('health with no brake/hold reports inactive',$h['brake_active']===false&&$h['provider_hold_active']===false&&$h['brake_until']===''&&$h['fail_by_code_1h']===[]);
+ t('tick writes the health snapshot in finally and runs the reconciler',str_contains($src,'self::health_write($result,$stage,$skip);')&&str_contains($src,'self::reconcile_transient();'));
+ t('health is exposed on /commercial/health details',str_contains(file_get_contents(__DIR__.'/../includes/class-wfca-rest.php'),"'health_v1'=>get_option('wfca_health_v1',null)"));
+-t('version bumped in header and constant (10.9.28 line kept green by accepting its successor)',preg_match('/Version: 10\.9\.(28-RESILIENCE|29-SELFHEAL|30-AUTORESPONDER-PRICE-GUARD)-RC1/',file_get_contents(__DIR__.'/../wf-commercial-agent.php'))&&preg_match("/define\('WFCA_VERSION', '10\.9\.(28-RESILIENCE|29-SELFHEAL|30-AUTORESPONDER-PRICE-GUARD)-RC1'\)/",file_get_contents(__DIR__.'/../wf-commercial-agent.php')));
++t('version bumped in header and constant (10.9.28 line kept green by accepting its successor)',preg_match('/Version: 10\.9\.(28-RESILIENCE|29-SELFHEAL|30-AUTORESPONDER-PRICE-GUARD|31-PRICE-REPLY-CONTEXT)-RC1/',file_get_contents(__DIR__.'/../wf-commercial-agent.php'))&&preg_match("/define\('WFCA_VERSION', '10\.9\.(28-RESILIENCE|29-SELFHEAL|30-AUTORESPONDER-PRICE-GUARD|31-PRICE-REPLY-CONTEXT)-RC1'\)/",file_get_contents(__DIR__.'/../wf-commercial-agent.php')));
+ t('send-time preview probe defers (no attempt burned) before the template send, behind a rules switch',str_contains($src,'d0_preview_probe((string)$live_media[\'url\'])')&&str_contains($src,"'D0_PREVIEW_PRESEND_UNREACHABLE_'")&&strpos($src,'d0_preview_probe(')<strpos($src,'WFCA_Transport::send($row,\'\',$content_sid,$variables)'));
+ echo "TOTAL PASS=$pass FAIL=$fail\n";exit($fail?1:0);
+diff -ru ../p30/wf-commercial-agent-supreme/test/test-selfheal-engine-10929.php wf-commercial-agent-supreme/test/test-selfheal-engine-10929.php
+--- ../p30/wf-commercial-agent-supreme/test/test-selfheal-engine-10929.php	2026-10-10 22:42:52.750586888 +0000
++++ wf-commercial-agent-supreme/test/test-selfheal-engine-10929.php	2026-10-10 23:05:06.001161413 +0000
+@@ -251,5 +251,5 @@
+ 
+ t('G5/noncanonical/variable-missing errors are not re-PATCHed when the record already carries them (Airtable 429 flood guard)',substr_count($src,"(\$f['Commercial Error']??'')!==")>=3);
+ t('tick: time limit + send budget, optional stages skipped over budget',str_contains($src,'@set_time_limit($tl)')&&str_contains($src,'self::tick_over_budget()')&&str_contains($src,"if (\$i>0 && self::tick_over_budget()) break;"));
+-t('version is 10.9.29 or its successor',preg_match("/define\('WFCA_VERSION', '10\.9\.(29-SELFHEAL|30-AUTORESPONDER-PRICE-GUARD)-RC1'\)/",file_get_contents(__DIR__.'/../wf-commercial-agent.php'))===1);
++t('version is 10.9.29 or its successor',preg_match("/define\('WFCA_VERSION', '10\.9\.(29-SELFHEAL|30-AUTORESPONDER-PRICE-GUARD|31-PRICE-REPLY-CONTEXT)-RC1'\)/",file_get_contents(__DIR__.'/../wf-commercial-agent.php'))===1);
+ echo "TOTAL PASS=$pass FAIL=$fail\n";exit($fail?1:0);
+diff -ru ../p30/wf-commercial-agent-supreme/wf-commercial-agent.php wf-commercial-agent-supreme/wf-commercial-agent.php
+--- ../p30/wf-commercial-agent-supreme/wf-commercial-agent.php	2026-10-10 22:41:14.047173811 +0000
++++ wf-commercial-agent-supreme/wf-commercial-agent.php	2026-10-10 23:05:05.977132076 +0000
+@@ -2,7 +2,7 @@
+ /**
+  * Plugin Name: Website Factory — Commercial Agent
+  * Description: Website Factory Commercial Agent: stable config-driven WhatsApp effect plane with transactional outbox, lifetime D0 idempotency, strict real spacing, per-lead media template capability, gated approved-template follow-up, owner/opt-out/payment fences, Kapso/Meta transport, InfinitePay verification and protected observability.
+- * Version: 10.9.30-AUTORESPONDER-PRICE-GUARD-RC1
++ * Version: 10.9.31-PRICE-REPLY-CONTEXT-RC1
+  * Author: Daniel Freire
+  * Requires at least: 6.5
+  * Requires PHP: 8.0
+@@ -10,7 +10,7 @@
+ 
+ if (!defined('ABSPATH')) exit;
+ 
+-define('WFCA_VERSION', '10.9.30-AUTORESPONDER-PRICE-GUARD-RC1');
++define('WFCA_VERSION', '10.9.31-PRICE-REPLY-CONTEXT-RC1');
+ define('WFCA_SCHEMA_VERSION', '10.4.0');
+ define('WFCA_DIR', plugin_dir_path(__FILE__));
+ define('WFCA_URL', plugin_dir_url(__FILE__));
