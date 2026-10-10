@@ -1,0 +1,336 @@
+diff -u -U1 -r '--exclude=test' '--exclude=PATCH-NOTES-10.9.26.txt' /tmp/claude-0/-home-user-vnext/2925f9ec-a7f0-5d7b-8625-89ea269969dd/scratchpad/p25/wf-commercial-agent-supreme/includes/class-wfca-admin.php /tmp/claude-0/-home-user-vnext/2925f9ec-a7f0-5d7b-8625-89ea269969dd/scratchpad/roundtrip/wf-commercial-agent-supreme/includes/class-wfca-admin.php
+--- /tmp/claude-0/-home-user-vnext/2925f9ec-a7f0-5d7b-8625-89ea269969dd/scratchpad/p25/wf-commercial-agent-supreme/includes/class-wfca-admin.php	2026-10-10 11:51:30.000000000 +0000
++++ /tmp/claude-0/-home-user-vnext/2925f9ec-a7f0-5d7b-8625-89ea269969dd/scratchpad/roundtrip/wf-commercial-agent-supreme/includes/class-wfca-admin.php	2026-10-10 12:13:32.000000000 +0000
+@@ -154,6 +154,16 @@
+                 </tbody>
+             </table>
+ 
++            <h2>Delivery failures by error code</h2>
++            <?php $dfc=WFCA_Util::delivery_fail_counters(); ?>
++            <p><em>Read-only diagnostic; not used by any send decision.</em></p>
++            <table class="widefat striped" style="max-width:1100px"><tbody>
++                <?php if (!$dfc['codes']): ?><tr><td>No delivery failure recorded.</td></tr><?php endif; ?>
++                <?php foreach ($dfc['codes'] as $k=>$v): ?>
++                    <tr><td><code><?php echo esc_html((string)$k); ?></code></td><td><?php echo (int)($v['count']??0); ?></td><td><?php echo esc_html((string)($v['last_at']??'')); ?></td><td>tail=<?php echo esc_html((string)($v['last_tail4']??'')); ?></td></tr>
++                <?php endforeach; ?>
++            </tbody></table>
++
+             <h2>Kapso signature telemetry</h2>
+             <?php if (!$sig): ?>
+                 <p>No Kapso signature check recorded yet.</p>
+diff -u -U1 -r '--exclude=test' '--exclude=PATCH-NOTES-10.9.26.txt' /tmp/claude-0/-home-user-vnext/2925f9ec-a7f0-5d7b-8625-89ea269969dd/scratchpad/p25/wf-commercial-agent-supreme/includes/class-wfca-airtable.php /tmp/claude-0/-home-user-vnext/2925f9ec-a7f0-5d7b-8625-89ea269969dd/scratchpad/roundtrip/wf-commercial-agent-supreme/includes/class-wfca-airtable.php
+--- /tmp/claude-0/-home-user-vnext/2925f9ec-a7f0-5d7b-8625-89ea269969dd/scratchpad/p25/wf-commercial-agent-supreme/includes/class-wfca-airtable.php	2026-10-10 11:51:30.000000000 +0000
++++ /tmp/claude-0/-home-user-vnext/2925f9ec-a7f0-5d7b-8625-89ea269969dd/scratchpad/roundtrip/wf-commercial-agent-supreme/includes/class-wfca-airtable.php	2026-10-10 12:26:54.000000000 +0000
+@@ -143,8 +143,10 @@
+     }
+ 
+     /** Canonicalize a Factory lead phone; provider inbound E.164 is never rewritten by this helper. */
+-    public static function canonical_factory_phone(string $value): string {
+-        $policy=self::phone_policy();
++    public static function canonical_factory_phone(string $value, ?array $policy=null): string {
++        // Loops pass one phone_policy() snapshot: otherwise every record costs a config() read
++        // (and one Config HTTP GET per record while the Config endpoint is failing).
++        $policy??=self::phone_policy();
+         return WFCA_Util::extract_factory_phone($value,(string)$policy['default_country_code'],(array)$policy['local_nsn_lengths']);
+     }
+ 
+@@ -205,6 +207,7 @@
+ 
+         $offset = null;
+         $matches = [];
++        $policy = self::phone_policy();
+         $fields = ['Lead','Telefone','Site URL','Build Status','Factory State','Public Smoke Status','Assigned Arm',
+                    'Observação Específica','Google Maps','Instagram','Source URL','Price Presented','Paid','Amount Received',
+                    'Cidade','Especialidade / Posicionamento','Notes'];
+@@ -215,7 +218,7 @@
+             if (!$r['ok']) return $r;
+             foreach (($r['data']['records'] ?? []) as $rec) {
+                 $p = (string)($rec['fields']['Telefone'] ?? '');
+-                if (hash_equals(self::canonical_factory_phone($p),$target) || WFCA_Util::phone_equivalent($p,$target)) $matches[] = $rec;
++                if (hash_equals(self::canonical_factory_phone($p,$policy),$target) || WFCA_Util::phone_equivalent($p,$target)) $matches[] = $rec;
+             }
+             $offset = $r['data']['offset'] ?? null;
+             if (!$offset) break;
+@@ -456,8 +459,48 @@
+         return ['ok'=>true,'record'=>$records[0]??null];
+     }
+ 
+-    public static function upsert_commercial_conversation(string $phone, string $lead_id, array $fields): array {
+-        $got = self::get_commercial_conversation($phone);
++    /**
++     * Batched read-only variant of get_commercial_conversation() for producer loops: one OR() query per
++     * 20 phones instead of one GET per phone. Returns [conversation_id => same shape as the single read].
++     * A chunk that fails or is not fully paged is simply absent so the caller falls back to the single read.
++     */
++    public static function get_commercial_conversations_bulk(array $phones): array {
++        $ids=[];
++        foreach ($phones as $p) { $cid=self::conversation_id((string)$p); if ($cid!=='wa:') $ids[$cid]=true; }
++        $out=[];
++        foreach (array_chunk(array_keys($ids),20) as $chunk) {
++            $parts=[];
++            foreach ($chunk as $cid) $parts[]="{Conversation ID}='".str_replace("'","\\'",$cid)."'";
++            $formula='OR('.implode(',',$parts).')';
++            $found=[];$offset=null;$seen=[];$complete=false;
++            for ($page=0;$page<5;$page++) {
++                $q=['pageSize'=>100,'filterByFormula'=>$formula];
++                if ($offset) $q['offset']=$offset;
++                $r=self::req('GET','Commercial Conversations','',null,$q);
++                if (empty($r['ok'])) return $out;
++                // A 2xx without a records list (proxy/captive page) is a failed chunk, never "20 conversations do not exist".
++                if (!isset($r['data']['records']) || !is_array($r['data']['records'])) return $out;
++                foreach (($r['data']['records']??[]) as $rec) {
++                    $c=(string)($rec['fields']['Conversation ID']??'');
++                    if ($c!=='') $found[$c][]=$rec;
++                }
++                $offset=$r['data']['offset']??null;
++                if (!$offset) { $complete=true;break; }
++                if (isset($seen[$offset])) break;
++                $seen[$offset]=true;
++            }
++            if (!$complete) return $out;
++            foreach ($chunk as $cid) {
++                $n=count($found[$cid]??[]);
++                $out[$cid]=$n>1?['ok'=>false,'error'=>'DUPLICATE_COMMERCIAL_CONVERSATION','count'=>$n]:['ok'=>true,'record'=>$found[$cid][0]??null];
++            }
++        }
++        return $out;
++    }
++
++    /** $known: a get_commercial_conversation() result the caller read moments ago in this same pass with no Commercial Conversations write since. */
++    public static function upsert_commercial_conversation(string $phone, string $lead_id, array $fields, ?array $known=null): array {
++        $got = ($known !== null && !empty($known['ok'])) ? $known : self::get_commercial_conversation($phone);
+         if (!$got['ok']) return $got;
+         $cid = self::conversation_id($phone);
+         $record = $got['record'] ?? null;
+@@ -614,6 +657,7 @@
+             if (is_array($cached)) return $cached;
+         }
+         $by_lead=[];$by_phone=[];$offset=null;$seen=[];
++        $policy=self::phone_policy();
+         for($page=0;$page<20;$page++) {
+             $q=['pageSize'=>100,'fields'=>['Lead','Notes','Attempt DateTime']];
+             if ($offset) $q['offset']=$offset;
+@@ -635,7 +679,7 @@
+                 foreach((array)($f['Lead']??[]) as $lid) if ((string)$lid!=='') $by_lead[(string)$lid]=true;
+                 if (preg_match_all('/(?:\\+?55\\s*)?\\(?\\d{2}\\)?[\\s.-]*\\d{4,5}[\\s.-]*\\d{4}/u',$notes,$m)) {
+                     foreach(($m[0]??[]) as $candidate) {
+-                        $p=self::canonical_factory_phone((string)$candidate);
++                        $p=self::canonical_factory_phone((string)$candidate,$policy);
+                         if ($p!=='') $by_phone[$p]=true;
+                     }
+                 }
+diff -u -U1 -r '--exclude=test' '--exclude=PATCH-NOTES-10.9.26.txt' /tmp/claude-0/-home-user-vnext/2925f9ec-a7f0-5d7b-8625-89ea269969dd/scratchpad/p25/wf-commercial-agent-supreme/includes/class-wfca-engine.php /tmp/claude-0/-home-user-vnext/2925f9ec-a7f0-5d7b-8625-89ea269969dd/scratchpad/roundtrip/wf-commercial-agent-supreme/includes/class-wfca-engine.php
+--- /tmp/claude-0/-home-user-vnext/2925f9ec-a7f0-5d7b-8625-89ea269969dd/scratchpad/p25/wf-commercial-agent-supreme/includes/class-wfca-engine.php	2026-10-10 11:51:30.000000000 +0000
++++ /tmp/claude-0/-home-user-vnext/2925f9ec-a7f0-5d7b-8625-89ea269969dd/scratchpad/roundtrip/wf-commercial-agent-supreme/includes/class-wfca-engine.php	2026-10-10 12:26:52.000000000 +0000
+@@ -236,9 +236,10 @@
+                     if ($why!=='' && $cv && !empty($cv['phone_e164'])) {
+                         $tail=substr((string)$cv['phone_e164'],-4);
+                         WFCA_Airtable::update_commercial_by_phone((string)$cv['phone_e164'],['Commercial Error'=>'WA_DELIVERY_FAILED '.$why.' tail='.$tail]);
+-                        if (!empty($row['lead_record_id'])) WFCA_Airtable::log_touch((string)$row['lead_record_id'],'OUTBOUND','DELIVERY_FAILED','WA_DELIVERY_FAILED '.$why.' tail='.$tail,(string)$e['provider_message_id']);
++                        if (!empty($row['lead_record_id'])) WFCA_Airtable::log_touch((string)$row['lead_record_id'],'OUTBOUND','DELIVERY_FAILED','WA_DELIVERY_FAILED '.$why.' tail='.$tail,(string)$e['provider_message_id'],'KAPSO','LUNA',(string)($cv['initial_arm']??''));
+                     }
+                 }
++                if ($status==='failed') { try { $fc=WFCA_DB::get_conversation((int)$row['conversation_id']); WFCA_Util::record_delivery_failure((string)($e['body']??''),(string)($fc['phone_e164']??'')); } catch (\Throwable $ex) {} }
+                 if ($status==='failed') WFCA_Alerts::raise('KAPSO_DELIVERY_FAILED','CRITICAL',$row['lead_record_id'],(int)$row['conversation_id'],$id,'','delivery:'.$e['provider_message_id']);
+             }
+             WFCA_DB::finish_event($id,'PROCESSED');return true;
+@@ -365,7 +366,7 @@
+                         'Owner Revision'=>(int)$conv['owner_revision']];
+                     if ($arm!=='') $fields['Initial Arm']=$arm;
+                 }
+-                WFCA_Airtable::upsert_commercial_conversation($phone,$lead_id,$fields);
++                WFCA_Airtable::upsert_commercial_conversation($phone,$lead_id,$fields,$got);
+             }
+             WFCA_Airtable::log_touch($lead_id,'INBOUND','AUTO_REPLY',$body,(string)$event['provider_message_id'],'KAPSO','PROSPECT',$arm);
+             // Silent now: never answer an automated clinic questionnaire/menu as if it
+@@ -416,7 +417,7 @@
+             // may have no Assigned Arm; preserve omission until an arm exists.
+             if ($arm !== '') $sync_fields['Initial Arm'] = $arm;
+         }
+-        $sync=WFCA_Airtable::upsert_commercial_conversation($phone,$lead_id,$sync_fields);
++        $sync=WFCA_Airtable::upsert_commercial_conversation($phone,$lead_id,$sync_fields,$got);
+         if (empty($sync['ok'])) { WFCA_DB::requeue_event($event_id,'AIRTABLE_CONVERSATION_WRITE_FAIL');return; }
+         WFCA_Ownership::sync((int)$conv['id']);
+         // STOP is interpreted even when Daniel owns the conversation, before media routing.
+@@ -1451,10 +1452,19 @@
+         $touch_index=WFCA_Airtable::outbound_touch_index();
+         if (empty($touch_index['ok'])) return ['ok'=>false,'reason'=>'TOUCH_HISTORY_READ_FAIL'];
+         $created=0;$preserved=0;$rebound=0;
++        // One phone-policy snapshot and one batched conversation read for the whole pass. Each prefetched row is
++        // consumed once (a later lead with the same phone re-reads live, after any write the first one made).
++        $policy=WFCA_Airtable::phone_policy();$ready_phones=[];
++        foreach(($list['data']['records']??[]) as $lead) {
++            if (!WFCA_Airtable::lead_is_commercial_ready($lead)) continue;
++            $ph=WFCA_Airtable::canonical_factory_phone((string)($lead['fields']['Telefone']??''),$policy);
++            if ($ph!=='') $ready_phones[]=$ph;
++        }
++        $prefetch=WFCA_Airtable::get_commercial_conversations_bulk($ready_phones);$pf_at=microtime(true);
+         foreach(($list['data']['records']??[]) as $lead) {
+             $lead_id=(string)($lead['id']??'');$f=$lead['fields']??[];
+             if ($lead_id==='' || !WFCA_Airtable::lead_is_commercial_ready($lead)) continue;
+-            $phone=WFCA_Airtable::canonical_factory_phone((string)($f['Telefone']??''));
++            $phone=WFCA_Airtable::canonical_factory_phone((string)($f['Telefone']??''),$policy);
+             if ($phone==='') continue;
+             $raw_arm=(string)($f['Assigned Arm']??'');
+             if ($raw_arm==='') {
+@@ -1465,7 +1475,11 @@
+             }
+             $arm=WFCA_Ownership::arm($raw_arm);
+             if ($arm==='') continue;
+-            $remote=WFCA_Airtable::get_commercial_conversation($phone);
++            $pf_key=WFCA_Airtable::conversation_id($phone);
++            // 10.9.26 (adversarial review): trust the batch row only when it EXISTS and is fresh (<2 s). An "absent" row, or any
++            // row older than that, is re-read live exactly like 10.9.25, so an inbound/STOP/owner change landing mid-pass is never overwritten.
++            if (!empty($prefetch[$pf_key]['record']) && (microtime(true)-$pf_at)<2.0) { $remote=$prefetch[$pf_key];unset($prefetch[$pf_key]); }
++            else $remote=WFCA_Airtable::get_commercial_conversation($phone);
+             if (empty($remote['ok'])) continue;
+             $rf=$remote['record']['fields']??[];
+             $local=WFCA_DB::get_conversation_by_phone($phone);
+diff -u -U1 -r '--exclude=test' '--exclude=PATCH-NOTES-10.9.26.txt' /tmp/claude-0/-home-user-vnext/2925f9ec-a7f0-5d7b-8625-89ea269969dd/scratchpad/p25/wf-commercial-agent-supreme/includes/class-wfca-kapso.php /tmp/claude-0/-home-user-vnext/2925f9ec-a7f0-5d7b-8625-89ea269969dd/scratchpad/roundtrip/wf-commercial-agent-supreme/includes/class-wfca-kapso.php
+--- /tmp/claude-0/-home-user-vnext/2925f9ec-a7f0-5d7b-8625-89ea269969dd/scratchpad/p25/wf-commercial-agent-supreme/includes/class-wfca-kapso.php	2026-10-10 11:51:30.000000000 +0000
++++ /tmp/claude-0/-home-user-vnext/2925f9ec-a7f0-5d7b-8625-89ea269969dd/scratchpad/roundtrip/wf-commercial-agent-supreme/includes/class-wfca-kapso.php	2026-10-10 12:27:14.000000000 +0000
+@@ -150,6 +150,44 @@
+         update_option('wfca_last_kapso_send',array_merge(['at'=>WFCA_Util::now_iso(),'to_tail'=>substr($to,-4)],$out),false);
+         return $out;
+     }
++    /** Masks any run of 9+ digits (phones, ids), tolerating spaces/dashes/parens between digits. */
++    public static function mask_nums(string $t): string {
++        return (string)preg_replace_callback('/\+?\d[\d\s().\/_-]{7,}\d/',fn($x)=>strlen(preg_replace('/\D/','',$x[0]))>=9?'[num]':$x[0],preg_replace('/\+?\d{9,}/','[num]',$t));
++    }
++    /** Pure: extracts the provider error of a failed-message webhook (Kapso v2 or raw Meta). Never reads message text. */
++    public static function failure_detail(array $p): array {
++        $m=is_array($p['message']??null)?$p['message']:[];$k=is_array($m['kapso']??null)?$m['kapso']:[];
++        $cands=[];
++        $st=is_array($k['statuses']??null)?array_values($k['statuses']):[];
++        // 10.9.26: tolerate odd shapes (errors as a single object or a string, non-scalar status) without warnings.
++        $first=static fn($v)=>is_array($v)?($v[0]??$v):(is_string($v)?$v:null);
++        $stt=static fn($s):string=>is_scalar($s['status']??null)?strtolower((string)$s['status']):'';
++        foreach ([true,false] as $failedOnly) foreach (array_reverse($st) as $s) {
++            if (!is_array($s) || ($failedOnly && $stt($s)!=='failed')) continue;
++            if (!$failedOnly && $stt($s)==='failed') continue;
++            $cands[]=$first($s['errors']??null)??($s['error']??null);
++        }
++        $cands[]=$first($m['errors']??null);$cands[]=$first($k['errors']??null);$cands[]=$m['error']??null;$cands[]=$k['error']??null;$cands[]=$k['status_details']??null;
++        $cands[]=$first($p['entry'][0]['changes'][0]['value']['statuses'][0]['errors']??null);
++        $cands[]=$first($p['statuses'][0]['errors']??null);
++        $src=['kapso.statuses[failed]','kapso.statuses[other]','message.errors','kapso.errors','message.error','kapso.error','kapso.status_details','meta.entry','meta.value'];
++        $fix=fn($v,int $n)=>mb_substr(trim(self::mask_nums(preg_replace('/\s+/',' ',is_scalar($v)?(string)$v:''))),0,$n);
++        // $cands order: failed statuses..., other statuses..., then fixed slots; source label by position.
++        $nf=0;$no=0;foreach ($st as $s) if (is_array($s)) { if ($stt($s)==='failed') $nf++; else $no++; }
++        foreach ($cands as $i=>$e) {
++            if ($e===null||$e===''||$e===[]) continue;
++            if (is_string($e)) $e=['title'=>$e];
++            if (!is_array($e)) continue;
++            $dt=$e['error_data']['details']??($e['details']??'');
++            $r=['code'=>$fix($e['code']??'',20),'title'=>$fix($e['title']??'',80),'message'=>$fix($e['message']??($e['detail']??''),160),'details'=>$fix($dt,120)];
++            if ($r['title']===''&&$r['message']!==''&&$r['code']==='') { $r['title']=mb_substr($r['message'],0,80);$r['message']=''; }
++            if ($r['code']===''&&$r['title']===''&&$r['message']===''&&$r['details']==='') continue;
++            $j=$i<$nf?0:($i<$nf+$no?1:$i-$nf-$no+2);
++            $r['source']=$src[min($j,count($src)-1)];
++            return $r;
++        }
++        return ['code'=>'','title'=>'','message'=>'','details'=>'','source'=>'none'];
++    }
+     public static function normalize(array $p,string $event): array {
+         $m=$p['message']??[];$k=$m['kapso']??[];$sender=(string)($p['phone_number_id']??'');
+         if ($sender==='' || $sender!==(string)WFCA_Util::c('WFCA_KAPSO_PHONE_NUMBER_ID','')) return ['ok'=>false,'error'=>'SENDER_MISMATCH'];
+@@ -162,14 +200,17 @@
+         $media=(!empty($k['has_media']) || in_array($type,['image','video','audio','document','sticker'],true))?[['type'=>$type,'id'=>(string)($m[$type]['id']??'')]]:[];
+         if (!in_array($event,['whatsapp.message.received','whatsapp.message.sent','whatsapp.message.delivered','whatsapp.message.read','whatsapp.message.failed'],true)) return ['ok'=>false,'error'=>'UNSUPPORTED_EVENT'];
+         if (($event==='whatsapp.message.received' && $direction!=='inbound') || ($event!=='whatsapp.message.received' && $direction!=='outbound')) return ['ok'=>false,'error'=>'EVENT_DIRECTION_MISMATCH'];
+-        // 10.9.25: a failed delivery carries no text, so keep Kapso's error code/title (no secrets, no phone) in body for the failure handler.
+-        if ($event==='whatsapp.message.failed' && $body==='') {
+-            $e0=$m['errors'][0]??($k['errors'][0]??($m['error']??($k['error']??($k['status_details']??[]))));
+-            $ec='';$et='';
+-            if (is_array($e0)) { $ec=(string)($e0['code']??'');$et=(string)($e0['title']??($e0['message']??'')); }
+-            elseif (is_string($e0)) { $et=$e0; }
+-            $body=($ec!==''||$et!=='')?'WA_ERR code='.$ec.' title='.$et:'WA_ERR NO_DETAIL m_keys='.implode(',',array_slice(array_map('strval',array_keys((array)$m)),0,12)).' k_keys='.implode(',',array_slice(array_map('strval',array_keys((array)$k)),0,12));
+-            $body=preg_replace('/\+?\d{9,}/','[num]',$body);
++        // 10.9.26: a failed delivery body is ALWAYS the provider error (never the message text). Kapso v2 nests it in kapso.statuses[].errors[].
++        if ($event==='whatsapp.message.failed') {
++            $d=self::failure_detail($p);
++            if ($d['code']!==''||$d['title']!==''||$d['message']!==''||$d['details']!=='') {
++                $body='WA_ERR code='.$d['code'].' title='.$d['title'].($d['message']!==''?' msg='.$d['message']:'').($d['details']!==''?' details='.$d['details']:'');
++            } else {
++                $ls=(isset($k['statuses'])&&is_array($k['statuses'])&&$k['statuses'])?end($k['statuses']):[];
++                $keys=fn($a)=>implode(',',array_slice(array_map('strval',array_keys((array)$a)),0,12));
++                $body='WA_ERR NO_DETAIL m_keys='.$keys($m).' k_keys='.$keys($k).' s_keys='.$keys($ls);
++            }
++            $body=self::mask_nums($body);
+         }
+         $status='RECEIVED';$kind='MESSAGE';
+         if ($origin==='history_sync') { $status='IGNORED_HISTORY';$kind='HISTORY'; }
+diff -u -U1 -r '--exclude=test' '--exclude=PATCH-NOTES-10.9.26.txt' /tmp/claude-0/-home-user-vnext/2925f9ec-a7f0-5d7b-8625-89ea269969dd/scratchpad/p25/wf-commercial-agent-supreme/includes/class-wfca-rest.php /tmp/claude-0/-home-user-vnext/2925f9ec-a7f0-5d7b-8625-89ea269969dd/scratchpad/roundtrip/wf-commercial-agent-supreme/includes/class-wfca-rest.php
+--- /tmp/claude-0/-home-user-vnext/2925f9ec-a7f0-5d7b-8625-89ea269969dd/scratchpad/p25/wf-commercial-agent-supreme/includes/class-wfca-rest.php	2026-10-10 11:51:30.000000000 +0000
++++ /tmp/claude-0/-home-user-vnext/2925f9ec-a7f0-5d7b-8625-89ea269969dd/scratchpad/roundtrip/wf-commercial-agent-supreme/includes/class-wfca-rest.php	2026-10-10 12:13:32.000000000 +0000
+@@ -160,6 +160,7 @@
+             'kapso'=>WFCA_Kapso::ready(),
+             'kapso_signature_check'=>WFCA_Kapso::last_signature_check(),
+             'kapso_last_send'=>WFCA_Kapso::last_send(),
++            'delivery_fail_counters'=>WFCA_Util::delivery_fail_counters(),
+             'openai'=>WFCA_OpenAI::ready(),
+             'openai_model'=>WFCA_OpenAI::model(),
+             'openai_telemetry'=>WFCA_OpenAI::telemetry(),
+diff -u -U1 -r '--exclude=test' '--exclude=PATCH-NOTES-10.9.26.txt' /tmp/claude-0/-home-user-vnext/2925f9ec-a7f0-5d7b-8625-89ea269969dd/scratchpad/p25/wf-commercial-agent-supreme/includes/class-wfca-util.php /tmp/claude-0/-home-user-vnext/2925f9ec-a7f0-5d7b-8625-89ea269969dd/scratchpad/roundtrip/wf-commercial-agent-supreme/includes/class-wfca-util.php
+--- /tmp/claude-0/-home-user-vnext/2925f9ec-a7f0-5d7b-8625-89ea269969dd/scratchpad/p25/wf-commercial-agent-supreme/includes/class-wfca-util.php	2026-10-10 11:51:30.000000000 +0000
++++ /tmp/claude-0/-home-user-vnext/2925f9ec-a7f0-5d7b-8625-89ea269969dd/scratchpad/roundtrip/wf-commercial-agent-supreme/includes/class-wfca-util.php	2026-10-10 12:27:14.000000000 +0000
+@@ -70,6 +70,38 @@
+         return false;
+     }
+ 
++    /** Read-only diagnostic counters of delivery failures by provider error code. Never read by any send decision or gate. */
++    public static function delivery_fail_code(string $body): string {
++        if (preg_match('/^WA_ERR code=([A-Za-z0-9_.\-]{1,12})/',$body,$m)) return 'code_'.$m[1];
++        return 'NO_DETAIL';
++    }
++
++    public static function record_delivery_failure(string $body,string $phone='',?int $now=null): void {
++        try {
++            $now=$now??time();
++            $key=self::delivery_fail_code($body);
++            $o=get_option('wfca_delivery_fail_counters',[]);
++            if (!is_array($o)) $o=[];
++            $codes=is_array($o['codes']??null)?$o['codes']:[];
++            $days=is_array($o['days']??null)?$o['days']:[];
++            if (!isset($codes[$key]) && count($codes)>=40) $key='code_OTHER';
++            $prev=is_array($codes[$key]??null)?$codes[$key]:[];
++            $codes[$key]=['count'=>(int)($prev['count']??0)+1,'last_at'=>gmdate('Y-m-d\TH:i:s\Z',$now),'last_tail4'=>substr(preg_replace('/\D+/','',$phone),-4)];
++            $day=gmdate('Y-m-d',$now);
++            $days[$day][$key]=(int)($days[$day][$key]??0)+1;
++            ksort($days);
++            $days=array_slice($days,-7,null,true);
++            update_option('wfca_delivery_fail_counters',['codes'=>$codes,'days'=>$days],false);
++        } catch (\Throwable $e) {}
++    }
++
++    public static function delivery_fail_counters(): array {
++        try {
++            $o=get_option('wfca_delivery_fail_counters',[]);
++            return is_array($o)?['codes'=>(array)($o['codes']??[]),'days'=>(array)($o['days']??[])]:['codes'=>[],'days'=>[]];
++        } catch (\Throwable $e) { return ['codes'=>[],'days'=>[]]; }
++    }
++
+     public static function short_text(string $text, int $max = 1200): string {
+         $text = wp_strip_all_tags($text);
+         $text = preg_replace('/\s+/u', ' ', $text);
+diff -u -U1 -r '--exclude=test' '--exclude=PATCH-NOTES-10.9.26.txt' /tmp/claude-0/-home-user-vnext/2925f9ec-a7f0-5d7b-8625-89ea269969dd/scratchpad/p25/wf-commercial-agent-supreme/wf-commercial-agent.php /tmp/claude-0/-home-user-vnext/2925f9ec-a7f0-5d7b-8625-89ea269969dd/scratchpad/roundtrip/wf-commercial-agent-supreme/wf-commercial-agent.php
+--- /tmp/claude-0/-home-user-vnext/2925f9ec-a7f0-5d7b-8625-89ea269969dd/scratchpad/p25/wf-commercial-agent-supreme/wf-commercial-agent.php	2026-10-10 11:51:30.000000000 +0000
++++ /tmp/claude-0/-home-user-vnext/2925f9ec-a7f0-5d7b-8625-89ea269969dd/scratchpad/roundtrip/wf-commercial-agent-supreme/wf-commercial-agent.php	2026-10-10 12:13:40.000000000 +0000
+@@ -2,7 +2,7 @@
+ /**
+  * Plugin Name: Website Factory — Commercial Agent
+  * Description: Website Factory Commercial Agent: stable config-driven WhatsApp effect plane with transactional outbox, lifetime D0 idempotency, strict real spacing, per-lead media template capability, gated approved-template follow-up, owner/opt-out/payment fences, Kapso/Meta transport, InfinitePay verification and protected observability.
+- * Version: 10.9.25-DELIVERY-ERROR-DETAIL-RC1
++ * Version: 10.9.26-PEAK-PERF-RC1
+  * Author: Daniel Freire
+  * Requires at least: 6.5
+  * Requires PHP: 8.0
+@@ -10,7 +10,7 @@
+ 
+ if (!defined('ABSPATH')) exit;
+ 
+-define('WFCA_VERSION', '10.9.25-DELIVERY-ERROR-DETAIL-RC1');
++define('WFCA_VERSION', '10.9.26-PEAK-PERF-RC1');
+ define('WFCA_SCHEMA_VERSION', '10.4.0');
+ define('WFCA_DIR', plugin_dir_path(__FILE__));
+ define('WFCA_URL', plugin_dir_url(__FILE__));
