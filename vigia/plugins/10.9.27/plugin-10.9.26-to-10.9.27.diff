@@ -1,0 +1,91 @@
+diff -ru -x test -x PATCH-NOTES-10.9.27.txt p26/wf-commercial-agent-supreme/includes/class-wfca-engine.php p27/wf-commercial-agent-supreme/includes/class-wfca-engine.php
+--- p26/wf-commercial-agent-supreme/includes/class-wfca-engine.php	2026-10-10 12:26:51.971340146 +0000
++++ p27/wf-commercial-agent-supreme/includes/class-wfca-engine.php	2026-10-10 13:53:51.277720328 +0000
+@@ -2150,17 +2150,24 @@
+         if ($until>time()) return true;
+         $since=(int)get_option('wfca_d0_brake_released_at',0);
+         global $wpdb;
+-        $rows=$wpdb->get_results($wpdb->prepare("SELECT delivery_status FROM ".WFCA_DB::t('outbox')." WHERE action_type='TEMPLATE_INITIAL' AND status='SENT' AND sent_at>%s ORDER BY id DESC LIMIT 10",gmdate('Y-m-d H:i:s',$since)),ARRAY_A)?:[];
+-        $resolved=0;$failed=0;
++        // 10.9.27: a failed row whose provider code is recipient-side (default 130472 experiment / 131026 undeliverable) says nothing about our
++        // sender quality, so it is left out of BOTH sides of the ratio. Unknown/missing code (legacy rows, odd payloads) still counts as a failure.
++        $rows=$wpdb->get_results($wpdb->prepare("SELECT o.delivery_status, CASE WHEN o.delivery_status='failed' THEN (SELECT e.body FROM ".WFCA_DB::t('events')." e WHERE e.provider_message_id=o.provider_message_id AND e.event_type='DELIVERY_FAILED' ORDER BY e.id DESC LIMIT 1) END AS fail_body FROM ".WFCA_DB::t('outbox')." o WHERE o.action_type='TEMPLATE_INITIAL' AND o.status='SENT' AND o.sent_at>%s ORDER BY o.id DESC LIMIT 10",gmdate('Y-m-d H:i:s',$since)),ARRAY_A)?:[];
++        $ignore=array_map('strval',(array)($rules['d0_delivery_brake_ignore_codes']??[]));
++        $resolved=0;$failed=0;$ignored=0;
+         foreach ($rows as $r) {
+             $st=strtolower((string)($r['delivery_status']??''));
++            if ($st==='failed' && $ignore) {
++                $code=WFCA_Util::delivery_fail_code_digits((string)($r['fail_body']??''));
++                if ($code!=='' && in_array($code,$ignore,true)) { $ignored++; continue; }
++            }
+             if (in_array($st,['delivered','read','failed'],true)) { $resolved++; if ($st==='failed') $failed++; }
+         }
+         if ($resolved<6) return false;
+         if ($failed/$resolved<=(float)$rules['d0_delivery_brake_failure_ratio']) return false;
+         update_option('wfca_d0_brake_until',time()+3600,false);
+         update_option('wfca_d0_brake_released_at',time()+3600,false);
+-        WFCA_Alerts::raise('D0_DELIVERY_BRAKE:'.$failed.'/'.$resolved.'_FAILED','CRITICAL','',0,0,'','d0brake:'.gmdate('YmdH'));
++        WFCA_Alerts::raise('D0_DELIVERY_BRAKE:'.$failed.'/'.$resolved.'_FAILED'.($ignored?'+'.$ignored.'_RECIPIENT_SIDE_IGNORED':''),'CRITICAL','',0,0,'','d0brake:'.gmdate('YmdH'));
+         return true;
+     }
+ 
+diff -ru -x test -x PATCH-NOTES-10.9.27.txt p26/wf-commercial-agent-supreme/includes/class-wfca-util.php p27/wf-commercial-agent-supreme/includes/class-wfca-util.php
+--- p26/wf-commercial-agent-supreme/includes/class-wfca-util.php	2026-10-10 12:27:14.983341514 +0000
++++ p27/wf-commercial-agent-supreme/includes/class-wfca-util.php	2026-10-10 13:53:51.274014847 +0000
+@@ -71,6 +71,11 @@
+     }
+ 
+     /** Read-only diagnostic counters of delivery failures by provider error code. Never read by any send decision or gate. */
++    /** Numeric provider error code of a failed-delivery body ('WA_ERR code=131049 ...' -> '131049'), '' when absent. Used by the D0 brake only to IGNORE recipient-side codes. */
++    public static function delivery_fail_code_digits(string $body): string {
++        return preg_match('/^WA_ERR code=(\d{3,8})(?!\d)/',$body,$m)?$m[1]:'';
++    }
++
+     public static function delivery_fail_code(string $body): string {
+         if (preg_match('/^WA_ERR code=([A-Za-z0-9_.\-]{1,12})/',$body,$m)) return 'code_'.$m[1];
+         return 'NO_DETAIL';
+@@ -213,7 +218,10 @@
+     public static function rules(): array {
+         $d=['auto_resume_enabled'=>true,'auto_resume_after_seconds'=>1800,'auto_resume_extra_blocked_states'=>[],
+             'gatekeeper_email_redirect_enabled'=>true,'gatekeeper_extra_hostile_words'=>[],
+-            'd0_jitter_max'=>0.25,'d0_delivery_brake_enabled'=>true,'d0_delivery_brake_failure_ratio'=>0.30,'d0_min_preview_bytes'=>150000];
++            'd0_jitter_max'=>0.25,'d0_delivery_brake_enabled'=>true,'d0_delivery_brake_failure_ratio'=>0.30,'d0_min_preview_bytes'=>150000,
++            // 10.9.27: Meta errors that say nothing about OUR sender quality (130472 user is in a Meta experiment, 131026 recipient cannot receive).
++            // They no longer count toward the delivery brake. Set [] in WFCA_RULES_V1 to restore the old behaviour.
++            'd0_delivery_brake_ignore_codes'=>['130472','131026']];
+         if (!class_exists('WFCA_Airtable')) return $d;
+         $cfg=WFCA_Airtable::config();
+         $j=json_decode(trim((string)($cfg['WFCA_RULES_V1']??'')),true);
+@@ -225,6 +233,11 @@
+         if (array_key_exists('d0_delivery_brake_enabled',$j)) $d['d0_delivery_brake_enabled']=filter_var($j['d0_delivery_brake_enabled'],FILTER_VALIDATE_BOOLEAN);
+         if (isset($j['d0_delivery_brake_failure_ratio']) && is_numeric($j['d0_delivery_brake_failure_ratio'])) $d['d0_delivery_brake_failure_ratio']=max(0.1,min(0.9,(float)$j['d0_delivery_brake_failure_ratio']));
+         if (array_key_exists('gatekeeper_email_redirect_enabled',$j)) $d['gatekeeper_email_redirect_enabled']=filter_var($j['gatekeeper_email_redirect_enabled'],FILTER_VALIDATE_BOOLEAN);
++        if (array_key_exists('d0_delivery_brake_ignore_codes',$j) && is_array($j['d0_delivery_brake_ignore_codes'])) {
++            $codes=[];
++            foreach (array_slice($j['d0_delivery_brake_ignore_codes'],0,10) as $x) { if (is_scalar($x) && preg_match('/^\d{3,8}$/',trim((string)$x))) $codes[]=trim((string)$x); }
++            $d['d0_delivery_brake_ignore_codes']=array_values(array_unique($codes));
++        }
+         foreach (['auto_resume_extra_blocked_states'=>'/^[A-Z_]{3,40}$/','gatekeeper_extra_hostile_words'=>'/^.{2,30}$/u'] as $k=>$re) {
+             if (!is_array($j[$k]??null)) continue;
+             foreach (array_slice($j[$k],0,40) as $x) { $x=trim((string)$x); if ($x!=='' && preg_match($re,$x)) $d[$k][]=$k==='gatekeeper_extra_hostile_words'?self::lower($x):$x; }
+diff -ru -x test -x PATCH-NOTES-10.9.27.txt p26/wf-commercial-agent-supreme/wf-commercial-agent.php p27/wf-commercial-agent-supreme/wf-commercial-agent.php
+--- p26/wf-commercial-agent-supreme/wf-commercial-agent.php	2026-10-10 12:13:40.521482171 +0000
++++ p27/wf-commercial-agent-supreme/wf-commercial-agent.php	2026-10-10 13:53:51.273646573 +0000
+@@ -2,7 +2,7 @@
+ /**
+  * Plugin Name: Website Factory — Commercial Agent
+  * Description: Website Factory Commercial Agent: stable config-driven WhatsApp effect plane with transactional outbox, lifetime D0 idempotency, strict real spacing, per-lead media template capability, gated approved-template follow-up, owner/opt-out/payment fences, Kapso/Meta transport, InfinitePay verification and protected observability.
+- * Version: 10.9.26-PEAK-PERF-RC1
++ * Version: 10.9.27-BRAKE-BY-CODE-RC1
+  * Author: Daniel Freire
+  * Requires at least: 6.5
+  * Requires PHP: 8.0
+@@ -10,7 +10,7 @@
+ 
+ if (!defined('ABSPATH')) exit;
+ 
+-define('WFCA_VERSION', '10.9.26-PEAK-PERF-RC1');
++define('WFCA_VERSION', '10.9.27-BRAKE-BY-CODE-RC1');
+ define('WFCA_SCHEMA_VERSION', '10.4.0');
+ define('WFCA_DIR', plugin_dir_path(__FILE__));
+ define('WFCA_URL', plugin_dir_url(__FILE__));

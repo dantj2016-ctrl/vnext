@@ -1,0 +1,31 @@
+Commercial Agent 10.9.27-BRAKE-BY-CODE-RC1 (parent: 10.9.26-PEAK-PERF-RC1, zip SHA256 1664604841273b462e9dfe2436706b4ae7e0b6d71572413689d4f46ae56768cf)
+
+SCOPE: the D0 delivery brake only. Authorized in writing by the owner (Daniel, 2026-10-10: "voce pode alterar sim o freio e o intervalo").
+No change to spacing, daily cap, schedule, templates, opt-out, dedupe, owner rules, D0 policy, or the brake's window (last 10 D0 since
+the last release), minimum sample (6 resolved) and ratio (Config WFCA_RULES_V1, default 0.30).
+
+WHY (real incident 2026-10-10 13:39Z): the brake paused all D0 for 1 h on "3/6 failed". The three failures were 131049 (Meta engagement
+throttle = a sender-quality signal), 131026 (Message undeliverable = recipient cannot receive) and 130472 (User's number is part of a Meta
+experiment = Meta excludes that user from marketing templates). Only one of the three says anything about our sender quality; the other two
+are recipient-side and not preventable. Counting them cost ~1 h (~10 D0) per false trip.
+
+WHAT: in d0_delivery_brake_active() a failed D0 whose stored provider code is in rules['d0_delivery_brake_ignore_codes']
+(default ["130472","131026"]) is left out of BOTH sides of the ratio. Everything else still counts: 131049, any other code, NO_DETAIL,
+legacy rows without a stored code (fail closed). The code is read from the failed-delivery event body ("WA_ERR code=<n> ...", written since
+10.9.26) via a correlated subquery that only runs for failed rows (events.provider_message_id is indexed). The alert text names the
+ignored ones: D0_DELIVERY_BRAKE:3/9_FAILED+1_RECIPIENT_SIDE_IGNORED.
+
+KNOBS (Airtable Config WFCA_RULES_V1, JSON, cached 60 s):
+  "d0_delivery_brake_ignore_codes": []                 -> full rollback to the 10.9.26 behaviour (no reinstall)
+  "d0_delivery_brake_ignore_codes": ["130472"]         -> ignore only the experiment code
+  "d0_delivery_brake_failure_ratio": 0.3               -> unchanged semantics
+Values are validated: digits 3-8, unique, max 10, non-array ignored (default stays).
+
+TESTS: lint OK on every php file; 31 test files pass (30 old + test-d0-brake-by-code.php, 24 asserts). The new test FAILS 6 asserts against the
+10.9.26 engine (mutant check), including the replay of the real incident (3 failures of 6 braked before, does not brake now).
+
+RISKS: (1) if Meta later makes 131026 a quality signal, the brake would ignore it -> set the ignore list to [] in Config. (2) the first sends after
+install have bodies from 10.9.26 (code present); older failed rows carry NO_DETAIL/no code and keep counting. (3) not a root-cause fix for the
+failures themselves: 131049 still needs the template/engagement work; 130472/131026 are properties of the recipients.
+ROLLBACK: Config ignore list [] (instant) or reinstall 10.9.26.
+NOT INCLUDED (suggested next): suppress follow-ups to numbers whose marketing template already failed with 130472/131026; stop selecting such leads for D0.
