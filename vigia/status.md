@@ -1,8 +1,7 @@
-# Status VIGIA (último ciclo registrado: 2026-10-10T12:45Z)
+# Status VIGIA (último ciclo registrado: 2026-10-10T13:05Z)
 
-- D0 PARADOS pelo freio de entrega (2/6 falhas) desde 12:22Z; o freio expira 13:22Z (10:22 BRT). Último D0 12:15:19Z. Estoque READY_FOR_CONTACT=81 (não falta estoque).
-- D0 hoje: ~23 enviados. Projeção até 18:00 BRT: ~90 (ritmo atual ~6,7 min por D0 após a pausa); ~105 no melhor caso com spacing_max=240. 150 exige cadência bem menor que o piso de 240 s: fora do que o VIGIA pode mudar.
-- Plugin 10.9.26 (PEAK-PERF-RC1) pronto (vigia/plugins/10.9.26/); instalar agora não custa D0.
-- 1º payload real de falha Kapso visto: `kapso.statuses` existe (10.9.26 lê); a 10.9.25 gravou NO_DETAIL.
-- Teto de 60 D0/dia NÃO é aplicado pelo código (ver sugestões).
-- Finder: ciclo 2 (17 candidatos em Goiânia, Florianópolis, Campo Grande e João Pessoa) em verificação antes de gravar.
+- D0 VOLTARAM às 12:53:37Z (e 12:59:57Z): o Daniel autorizou por escrito alterar freio e intervalo; liberei a pausa (era até 13:22Z), subi a razão do freio de 0,30 para 0,40 (freio segue ligado) e baixei spacing_max de sábado de 360 para 300 s. Detalhes e rollback em sugestoes-para-mac.md (2026-10-10T13:05Z).
+- D0 hoje: ~23 enviados até 13:00Z. Projeção até 18:00 BRT: ~75-90. 150 continua inalcançável com segurança.
+- Plugin 10.9.26 instalado e ativo (confirmado pelo Daniel no WP admin). Vigiar: primeiro código de erro real da Kapso nos contadores de falha.
+- Finder: 8 de 15 candidatos verificados gravados em Prepared Candidates (Goiânia + Florianópolis); o construtor já pegou 2. Campo Grande + João Pessoa (7) em gravação.
+- Teto de 60 D0/dia NÃO é aplicado pelo código (ver sugestões anteriores).
