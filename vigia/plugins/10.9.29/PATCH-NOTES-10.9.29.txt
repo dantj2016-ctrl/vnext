@@ -1,0 +1,43 @@
+WF Commercial Agent Supreme 10.9.29-SELFHEAL-RC1  (base: 10.9.28-RESILIENCE-RC1, in production)
+
+Goal: zero surprises 12-16/10 (D0 08:00-18:00 BRT ~100/day spacing 240-300 s; follow-up 08:00-18:00 spacing 300 s). Self-healing without self-bugging.
+No change to the safety gates: opt-out, real human handoff, payment, accepted/delivered message idempotency, D0 lifetime key, owner/revision fences.
+No schema change. All new state is in options (autoload=no). Every feature has a WFCA_RULES_V1 switch (AUDIT-10.9.29.md section 4).
+
+1. Class policy last-known-good (util: class_commercial_policy -> policy_last_known_good; raw logic renamed class_commercial_policy_raw)
+   - last VALID raw JSON per key kept in wfca_policy_lkg_v1; invalid now => the previous policy is re-evaluated (same validators) for up to policy_lkg_max_hours (48) since last seen valid.
+   - wfca_policy_state_v1 -> health_v1.policy_error / policy_source / policy_using_lkg / policy_lkg_age_s / policy_invalid_since.
+   - ONE CRITICAL alert per episode (POLICY_INVALID:<key>:<error>), another when the LKG expires (POLICY_LKG_EXPIRED), resolved when fixed. No LKG => fail closed as before, but loud.
+2. Stall self-diagnosis (engine: schedule_initial_contacts gates, stall_diag, selfheal_health)
+   - health_v1.d0_age_s, d0_stall_age_s, d0_stall_reason (first blocking gate: DRAINING, MODE_NOT_ACTIVE, CONFIG_UNAVAILABLE, POLICY_INVALID, OUTSIDE_WINDOW, TEMPLATE_NOT_ACTIVE, SPACING_WAIT,
+     BRAKE_ACTIVE, PROVIDER_HOLD, DAILY_CAP, ELIGIBLE_READ_FAIL, NO_ELIGIBLE_CONVERSATION, CANDIDATES_REJECTED, and from the outbox: PROBE_DEFERRED, CROSS_CLASS_FLOOR), fu_age_s, fu_stall_reason, d0_stock.
+   - CRITICAL D0_STALL when inside the window, stock waiting, nothing sent for stall_alert_after_seconds (900) and the reason is not legitimate. The clock restarts when the window opens. Resolved when a D0 goes out.
+3. SMTP-independent CRITICAL channel (alerts)
+   - FINDING: alerts without a conversation (brake, reconciler, policy, stall) NEVER reached e-mail/WhatsApp (alerts.php enqueue(): local panel only). Now every CRITICAL alert also goes to:
+     option wfca_alerts_ring (last 50, options only) -> health_v1.critical_alerts (last 10) + critical_alerts_24h  (watchdog reads /commercial/health: 1 call);
+     Airtable existing field 'Commercial Error' of the conversation ("ALERT CRITICAL <reason> @ <iso>"), flushed 2/tick, best effort; one direct owner wp_mail for conversation-less ones.
+   - No new Airtable table; no new Airtable calls inside raise() (flush_ring runs once per tick).
+4. Kapso 5xx/timeout on a D0 (ambiguous) - decision in AUDIT section 2
+   - D0 stays UNCERTAIN, key consumed, NEVER auto re-sent, CRITICAL alert kept; but no HUMAN_HANDOFF/human_hold when no human signal (Commercial Error = D0_SEND_AMBIGUOUS_AWAITING_STATUS only).
+   - (b) a status webhook (sent/delivered/read/failed) whose provider id matches no outbox row is bound to the single UNCERTAIN D0 of that phone (sent within the window) -> SENT, normal sync/follow-up flow.
+   - (c) after ambiguous_release_after_seconds (6 h) with no status: row stays UNCERTAIN (marker RELEASED_AMBIGUOUS_NO_STATUS), D0 recorded as attempted (Touch D0_AMBIGUOUS_NO_STATUS), conversation -> WAITING_REPLY, WARN alert.
+   - Follow-up, replies, checkout and HANDOFF_ACK ambiguity keep the 10.9.28 handoff. Legacy 10.9.28 ambiguous handoffs are left to Daniel.
+5. Reconciler hardening
+   - circuit breaker: reconcile_max_per_hour (10); paused (+ WARN alert, 1/hour) while the D0 brake or provider hold is active; per-run cap reconcile_max_per_run (existing, 1-20).
+   - never restores: opt-out, prospect inbound, Daniel manual message (last_manual_at), terminal payment (new), non-transient reasons; remote opt-out still re-read by Ownership::change. Loop breaker (3 per outbox) kept.
+   - proven idempotent by test (2nd/3rd run: 0 changes). Audit ring wfca_reconcile_audit (conversation, action, reason, time) + wfca_selfheal_totals + health_v1.reconcile_restored_1h / audit tails.
+6. Premortem fixes (details and evidence in AUDIT-10.9.29.md section 3)
+   - follow-up materializer round-robin cursor (the same 100 oldest WAITING_REPLY leads blocked every newer follow-up) [fu_materialize_rotate]
+   - eligible D0 page never smaller than d0_eligible_page_size (50) (was remaining*3 = 3 near the daily cap)
+   - rejected-record Commercial Error is not PATCHed every tick (2 Airtable calls per rejected record per tick = 429 flood)
+   - Airtable 429 back-off (Retry-After, 30-120 s, fail fast) [airtable_backoff_enabled]
+   - Config errors visible (wfca_config_error: DUPLICATE_CURRENT_KEY:<key> / READ_FAIL) + opt-in stale config [config_stale_ttl_seconds, default 0 = fail closed]
+   - outbound-touch index 20 -> 60 pages, truncation flagged (touch_index_truncated) [touch_index_max_pages]
+   - tick time limit (set_time_limit 180) + send budget (no NEW send after 100 s, optional stages skipped) [tick_time_limit_seconds, tick_send_budget_seconds]
+
+New WFCA_RULES_V1 keys (validated/clamped, all optional): policy_lkg_enabled, policy_lkg_max_hours, stall_diag_enabled, stall_alert_after_seconds, alerts_ring_enabled, alerts_airtable_mirror,
+alerts_direct_mail, ambiguous_soft_enabled, ambiguous_resolve_by_status, ambiguous_release_enabled, ambiguous_release_after_seconds, reconcile_breaker_enabled, reconcile_max_per_hour,
+d0_eligible_page_size, tick_time_limit_seconds, tick_send_budget_seconds, airtable_backoff_enabled, fu_materialize_rotate, touch_index_max_pages, config_stale_ttl_seconds.
+
+Existing-test adaptations (2 assertions, no behaviour weakened): test-resilience-10928.php version line accepts the successor version; test-autonomy-delivery.php source anchor now matches waiting_followup_candidates(100,$cursor).
+Tests: test/test-selfheal-policy-lkg.php, test-selfheal-alerts-ring.php, test-selfheal-engine-10929.php, test-selfheal-airtable-db.php (+ all 10.9.28 tests; one version assertion in test-resilience-10928.php now accepts the successor version).

@@ -11,3 +11,8 @@
 - Mudanca em Config (WFCA_RULES_V1): razao 0,30 -> 0,40; d0_delivery_brake_ignore_codes += 131053. Rollback na linha [MUDANCA] 19:20Z do Progress Log.
 - Plugin 10.9.28-RESILIENCE-RC1 em vigia/plugins/10.9.28/ (zip + SHA256 + AUDIT + PATCH-NOTES + diff): 131053 transitorio com reenvio seguro (chave INITIAL|lead|phone|R<n>), 402 pausa o provedor sem queimar lead, reconciliador de handoffs transitorios a cada 10 min, follow-up so para D0 nao falho, probe da previa antes do envio, wfca_health_v1. Testes offline: 640 passaram.
 - Instalar no domingo (D0 desligado), conferir wfca_health_v1 e so entao segunda 08:00.
+
+## 2026-10-10 20:25Z — plugin 10.9.29-SELFHEAL-RC1 (pronto, NAO instalado)
+- vigia/plugins/10.9.29/: zip + SHA256 + AUDIT (premortem, 20 achados) + PATCH-NOTES + diff p28->p29. Testes offline: 37 arquivos, 0 falhas (revisado e rerodado por mim).
+- Politica de agenda invalida: last-known-good (48 h) + alerta; d0_stall_reason/d0_age_s em wfca_health_v1; alertas CRITICAL sem SMTP (wfca_alerts_ring); 5xx ambiguo do D0 sem handoff e sem reenvio; reconciliador com disjuntor (10/h); cursor no materializador de follow-up.
+- Instalar depois das 21h BRT ou no domingo; conferir wfca_health_v1 e o 1o D0 de segunda com assinatura 10.9.29.
